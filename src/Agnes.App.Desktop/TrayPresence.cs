@@ -90,13 +90,21 @@ internal sealed class TrayPresence
         _status.ActivateRequested += OnActivateRequested;
         _status.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(TrayStatusViewModel.Tooltip))
+            try
             {
-                _icon.ToolTipText = _status.Tooltip;
+                if (e.PropertyName is nameof(TrayStatusViewModel.Tooltip))
+                {
+                    _icon.ToolTipText = _status.Tooltip;
+                }
+                else if (e.PropertyName is nameof(TrayStatusViewModel.HasAttention))
+                {
+                    _icon.Icon = _status.HasAttention ? _attentionIcon : _idleIcon;
+                }
             }
-            else if (e.PropertyName is nameof(TrayStatusViewModel.HasAttention))
+            catch
             {
-                _icon.Icon = _status.HasAttention ? _attentionIcon : _idleIcon;
+                // Tray integration is additive. Some Avalonia.Native backends can reject live tray updates;
+                // keep the app running even if the tray presentation goes stale.
             }
         };
         _status.NeedsAttention.CollectionChanged += (_, _) => RebuildMenu();
@@ -177,7 +185,15 @@ internal sealed class TrayPresence
         quit.Click += (_, _) => Quit();
         menu.Add(quit);
 
-        _icon.Menu = menu;
+        try
+        {
+            _icon.Menu = menu;
+        }
+        catch
+        {
+            // A failed native menu update must never take down the desktop client. The window, sessions and
+            // notifications still work; only the tray menu may be stale or absent on this backend.
+        }
     }
 
     // A tiny solid dot rendered in software (no asset needed); recolored to signal the attention state.
