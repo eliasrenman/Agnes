@@ -1631,8 +1631,32 @@
                                     </DataTemplate>
 
                                     <DataTemplate DataType="tr:NoticeItem">
-                                        <TextBlock Text="{Binding Text}" Foreground="{DynamicResource FgDim}"
-                                                   FontStyle="Italic" Margin="0,6" TextWrapping="Wrap" />
+                                        <Border Classes="msg" Margin="0,6">
+                                            <Border.ContextFlyout>
+                                                <MenuFlyout>
+                                                    <MenuItem Header="Copy output" Click="OnCopyNotice" CommandParameter="{Binding}" />
+                                                    <MenuItem Header="Copy link to this output" Click="OnCopyNoticeLink" CommandParameter="{Binding}" />
+                                                </MenuFlyout>
+                                            </Border.ContextFlyout>
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <SelectableTextBlock Grid.Column="0" Text="{Binding Text}"
+                                                                     Foreground="{DynamicResource FgDim}"
+                                                                     FontStyle="Italic" TextWrapping="Wrap"
+                                                                     ctl:SelectionContextMenu.Enable="True" />
+                                                <Button Grid.Column="1" Classes="rowmenu" Content="{icx:SymbolIcon Symbol=MoreHorizontal}"
+                                                        Background="Transparent" Foreground="{DynamicResource FgDim}"
+                                                        BorderThickness="0" Padding="6,0" FontSize="15" Cursor="Hand"
+                                                        VerticalAlignment="Top" CommandParameter="{Binding}"
+                                                        AutomationProperties.Name="Output actions">
+                                                    <Button.Flyout>
+                                                        <MenuFlyout>
+                                                            <MenuItem Header="Copy output" Click="OnCopyNotice" CommandParameter="{Binding}" />
+                                                            <MenuItem Header="Copy link to this output" Click="OnCopyNoticeLink" CommandParameter="{Binding}" />
+                                                        </MenuFlyout>
+                                                    </Button.Flyout>
+                                                </Button>
+                                            </Grid>
+                                        </Border>
                                     </DataTemplate>
 
                             </ListBox.DataTemplates>

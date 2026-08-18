@@ -736,6 +736,40 @@ public partial class SessionTabView : UserControl
         }
     }
 
+    private async void OnCopyNotice(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (ItemFrom<Agnes.Ui.Core.Transcript.NoticeItem>(sender) is { } notice
+            && TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
+        {
+            await clipboard.SetTextAsync(notice.Text);
+        }
+    }
+
+    private async void OnCopyNoticeLink(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (ItemFrom<Agnes.Ui.Core.Transcript.TranscriptItem>(sender) is { } item
+            && _session is not null
+            && TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
+        {
+            await clipboard.SetTextAsync(_session.ShareLinkTo(item.Sequence));
+        }
+    }
+
+    private static T? ItemFrom<T>(object? sender) where T : Agnes.Ui.Core.Transcript.TranscriptItem
+    {
+        if (sender is MenuItem { CommandParameter: T menuParameter })
+        {
+            return menuParameter;
+        }
+
+        if (sender is Button { CommandParameter: T buttonParameter })
+        {
+            return buttonParameter;
+        }
+
+        return sender is Control { DataContext: T dataContext } ? dataContext : null;
+    }
+
     // Collapses a side column to 0 when hidden (remembering any dragged width) and restores it
     // when shown — so panels appear only when needed, and the GridSplitter keeps its width.
     private static void Apply(ColumnDefinition panel, ColumnDefinition splitter, bool show, ref double remembered)
