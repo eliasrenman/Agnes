@@ -62,6 +62,9 @@ public sealed record PlanEntry(string Content, string Status, string? Priority =
 [JsonDerivedType(typeof(ToolCallUpdateEvent), "tool_call_update")]
 [JsonDerivedType(typeof(PlanEvent), "plan")]
 [JsonDerivedType(typeof(ModeChangedEvent), "mode_changed")]
+[JsonDerivedType(typeof(ReasoningEffortChangedEvent), "reasoning_effort_changed")]
+[JsonDerivedType(typeof(AgentCommandsChangedEvent), "agent_commands_changed")]
+[JsonDerivedType(typeof(ProviderGoalChangedEvent), "provider_goal_changed")]
 [JsonDerivedType(typeof(PermissionRequestedEvent), "permission_requested")]
 [JsonDerivedType(typeof(PermissionResolvedEvent), "permission_resolved")]
 [JsonDerivedType(typeof(QuestionAskedEvent), "question_asked")]
@@ -121,6 +124,15 @@ public sealed record PlanEvent(IReadOnlyList<PlanEntry> Entries) : SessionEvent;
 
 /// <summary>The agent's active mode changed.</summary>
 public sealed record ModeChangedEvent(string ModeId) : SessionEvent;
+
+/// <summary>The provider-confirmed effective reasoning-effort state changed.</summary>
+public sealed record ReasoningEffortChangedEvent(ReasoningEffortCapability Capability) : SessionEvent;
+
+/// <summary>The provider-native commands currently advertised by the live agent session.</summary>
+public sealed record AgentCommandsChangedEvent(IReadOnlyList<AgentCommandInfo> Commands) : SessionEvent;
+
+/// <summary>The provider-confirmed goal changed or was cleared (null).</summary>
+public sealed record ProviderGoalChangedEvent(ProviderGoalInfo? Goal) : SessionEvent;
 
 /// <summary>The agent is requesting the user's permission to proceed with a tool call.</summary>
 /// <param name="Detail">

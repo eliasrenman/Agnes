@@ -2,6 +2,7 @@ using Agnes.Abstractions;
 using Agnes.Abstractions.Events;
 using Agnes.Host.Events;
 using Agnes.Host.Sessions;
+using Agnes.Protocol;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Agnes.Host.Tests;
@@ -39,6 +40,26 @@ public class AgentEventBridgeTests
     }
 
     private static ToolCallEvent Tool(string id) => new(id, id, ToolKind.Execute, ToolCallStatus.Pending, [new TextContent(id)]);
+
+    [Fact]
+    public async Task Live_provider_commands_are_persisted_for_snapshot_replay()
+    {
+        var adapter = new ScriptedAgentAdapter();
+        adapter.Session.Commands = [new AgentCommandInfo("provider.plan", "plan", "Switch to Plan mode")];
+        await using var manager = new SessionManager(
+            TestPluginRegistries.Agents(adapter), new InMemoryEventStore(), new CollectingBroadcaster(), NullLoggerFactory.Instance);
+
+        var info = await manager.OpenSessionAsync("scripted", "/tmp/work", useSandbox: false);
+        SessionSnapshot? snapshot = null;
+        await WaitForAsync(() =>
+        {
+            snapshot = manager.GetSnapshotAsync(info.SessionId, 0).GetAwaiter().GetResult();
+            return snapshot.Events.OfType<AgentCommandsChangedEvent>().Any();
+        });
+
+        var discovered = Assert.Single(snapshot!.Events.OfType<AgentCommandsChangedEvent>());
+        Assert.Equal("plan", Assert.Single(discovered.Commands).Name);
+    }
 
     [Fact]
     public async Task A_plugin_can_observe_inbound_tool_calls_with_full_typing()

@@ -50,6 +50,33 @@ public class OverlayPanelGateTests
         Assert.False(doc.TerminalPanelVisible);
     }
 
+    [Fact]
+    public void Launch_effort_defaults_and_is_retained_only_when_the_new_model_supports_it()
+    {
+        var doc = new SessionDocument(new NullTabController(), ImmediateDispatcher.Instance);
+        var low = new ReasoningEffortInfo("low", "Low");
+        var high = new ReasoningEffortInfo("high", "High");
+        var medium = new ReasoningEffortInfo("medium", "Medium");
+        var a = Choice("a", [low, high], "high");
+        var b = Choice("b", [low, high], "low");
+        var c = Choice("c", [medium], "medium");
+
+        doc.SetModels([a, b, c]);
+        Assert.True(doc.HasReasoningEfforts);
+        Assert.Equal("high", doc.EffectiveReasoningEffortId);
+
+        doc.SelectModelChoiceCommand.Execute(b);
+        Assert.Equal("high", doc.EffectiveReasoningEffortId); // retained
+
+        doc.SelectModelChoiceCommand.Execute(c);
+        Assert.Equal("medium", doc.EffectiveReasoningEffortId); // reset to the new model's default
+    }
+
+    private static ModelChoice Choice(
+        string id, IReadOnlyList<ReasoningEffortInfo> efforts, string defaultEffort)
+        => new(new ModelOption(id, id, IsCustomEntryAllowed: true, IsFavorite: false, IsAvailable: true,
+            efforts, defaultEffort));
+
     /// <summary>A do-nothing <see cref="ITabController"/> — the gate under test never calls back into it.</summary>
     private sealed class NullTabController : ITabController
     {
@@ -61,7 +88,7 @@ public class OverlayPanelGateTests
         public Task SignInWithKeyAsync(SessionDocument doc) => Task.CompletedTask;
         public Task ForgetHostAsync(SessionDocument doc, KnownHost host) => Task.CompletedTask;
         public bool IsForgettableHost(string url) => false;
-        public Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null) => Task.CompletedTask;
+        public Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null) => Task.CompletedTask;
         public Task DiscoverExternalSessionsAsync(SessionDocument doc) => Task.CompletedTask;
         public Task WatchExternalSessionAsync(SessionDocument doc, ExternalSessionInfo external) => Task.CompletedTask;
         public Task AttachCatalogSessionAsync(SessionDocument doc, Agnes.Ui.Core.ViewModels.CatalogSessionRow row) => Task.CompletedTask;

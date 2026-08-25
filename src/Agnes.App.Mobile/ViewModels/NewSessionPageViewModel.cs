@@ -70,7 +70,7 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
             ?? hosts.Links.FirstOrDefault();
 
         SelectHostCommand = new AsyncRelayCommand<HostLink>(SelectHostAsync);
-        SelectAgentCommand = new RelayCommand<AgentOption>(SelectAgent);
+        SelectAgentCommand = new RelayCommand<AgentOption>(option => SelectAgent(option));
         StartCommand = new AsyncRelayCommand(StartAsync, () => SelectedAgent is { Available: true } && !IsStarting);
         AddHostCommand = new RelayCommand(() =>
         {
@@ -108,6 +108,41 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
     public ObservableCollection<AgentOption> Agents { get; } = [];
 
     public ObservableCollection<LaunchProfile> Profiles { get; } = [];
+
+    public ObservableCollection<ModelInfo> Models { get; } = [];
+
+    public bool HasModels => Models.Count > 0;
+
+    private string? _pendingProfileModelId;
+    private string? _pendingProfileEffortId;
+    private bool _reconcilingEffort;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AvailableReasoningEfforts))]
+    [NotifyPropertyChangedFor(nameof(HasReasoningEfforts))]
+    private ModelInfo? _selectedModel;
+
+    partial void OnSelectedModelChanged(ModelInfo? value) => ReconcileReasoningEffort(SelectedReasoningEffort?.Id);
+
+    public IReadOnlyList<ReasoningEffortInfo> AvailableReasoningEfforts
+        => SelectedModel?.SupportedReasoningEfforts ?? [];
+
+    public bool HasReasoningEfforts => AvailableReasoningEfforts.Count > 0;
+
+    [ObservableProperty]
+    private ReasoningEffortInfo? _selectedReasoningEffort;
+
+    partial void OnSelectedReasoningEffortChanged(ReasoningEffortInfo? value)
+    {
+        if (!_reconcilingEffort && value is not null)
+        {
+            _pendingProfileEffortId = null;
+            if (Status.StartsWith("Saved effort", StringComparison.Ordinal))
+            {
+                Status = string.Empty;
+            }
+        }
+    }
 
     public bool HasProfiles => Profiles.Count > 0;
 
@@ -265,7 +300,7 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
         }
     }
 
-    private void SelectAgent(AgentOption? option)
+    private void SelectAgent(AgentOption? option, bool preserveProfile = false)
     {
         if (option is null || !option.Available)
         {
@@ -278,6 +313,77 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
         }
 
         SelectedAgent = option;
+        if (!preserveProfile)
+        {
+            _pendingProfileModelId = null;
+            _pendingProfileEffortId = null;
+        }
+
+        _ = LoadModelsAsync(option.AdapterId);
+    }
+
+    private async Task LoadModelsAsync(string adapterId)
+    {
+        var host = SelectedHost is { } link ? await link.ConnectAsync().ConfigureAwait(false) : null;
+        if (host is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<ModelInfo> models;
+        try
+        {
+            models = await host.ListModelsAsync(adapterId).ConfigureAwait(false);
+        }
+        catch
+        {
+            models = [];
+        }
+
+        _shell.Dispatcher.Post(() =>
+        {
+            if (SelectedAgent?.AdapterId != adapterId)
+            {
+                return;
+            }
+
+            Models.Clear();
+            foreach (var model in models)
+            {
+                Models.Add(model);
+            }
+
+            SelectedModel = _pendingProfileModelId is { } requested
+                ? Models.FirstOrDefault(m => m.Id == requested)
+                : Models.FirstOrDefault();
+            OnPropertyChanged(nameof(HasModels));
+            ReconcileReasoningEffort(_pendingProfileEffortId);
+
+            if (_pendingProfileModelId is { } staleModel && SelectedModel is null)
+            {
+                Status = $"Saved model '{staleModel}' is no longer available.";
+            }
+        });
+    }
+
+    private void ReconcileReasoningEffort(string? preferredId)
+    {
+        var supported = AvailableReasoningEfforts;
+        var next = preferredId is null ? null : supported.FirstOrDefault(e => e.Id == preferredId);
+        next ??= supported.FirstOrDefault(e => e.Id == SelectedModel?.DefaultReasoningEffortId);
+        _reconcilingEffort = true;
+        SelectedReasoningEffort = next;
+        _reconcilingEffort = false;
+        if (preferredId is not null && supported.All(e => e.Id != preferredId))
+        {
+            Status = supported.Count == 0
+                ? $"Saved effort '{preferredId}' is not supported by this model."
+                : $"Saved effort '{preferredId}' is stale. Current values: {string.Join(", ", supported.Select(e => e.Id))}.";
+        }
+        else
+        {
+            _pendingProfileEffortId = null;
+        }
     }
 
     private void ApplyProfile(LaunchProfile? profile)
@@ -295,7 +401,9 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
         SkipPermissions = profile.SkipPermissions && !PermissionPromptsRequired;
         GitCredentialMode = profile.GitCredentialMode;
         UseSandbox = profile.UseSandbox && SandboxAvailable;
-        SelectAgent(Agents.FirstOrDefault(a => a.AdapterId == profile.AdapterId && a.Available));
+        _pendingProfileModelId = profile.ModelId;
+        _pendingProfileEffortId = profile.ReasoningEffortId;
+        SelectAgent(Agents.FirstOrDefault(a => a.AdapterId == profile.AdapterId && a.Available), preserveProfile: true);
         _shell.Haptics.Tick();
         Status = $"Applied \"{profile.Name}\" — adjust anything, then start.";
     }
@@ -330,7 +438,9 @@ public sealed partial class NewSessionPageViewModel : PageViewModel
                 directory,
                 skipPermissions: SkipPermissions,
                 gitCredentialMode: GitCredentialMode,
-                useSandbox: SandboxAvailable && UseSandbox).ConfigureAwait(false);
+                useSandbox: SandboxAvailable && UseSandbox,
+                modelId: SelectedModel?.Id ?? _pendingProfileModelId,
+                reasoningEffortId: _pendingProfileEffortId ?? SelectedReasoningEffort?.Id).ConfigureAwait(false);
 
             var view = await host.SubscribeAsync(info.SessionId).ConfigureAwait(false);
 

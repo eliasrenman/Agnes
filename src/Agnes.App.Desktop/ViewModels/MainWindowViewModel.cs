@@ -2864,7 +2864,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, ITabControll
         }
     }
 
-    public async Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null)
+    public async Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null)
     {
         if (doc.Host is null)
         {
@@ -2890,7 +2890,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, ITabControll
 
         try
         {
-            var info = await doc.Host.OpenSessionAsync(adapterId, workingDirectory, skipPermissions: skipPermissions, mcpApproval: McpApproval, gitCredentialMode: gitCredentialMode, useSandbox: useSandbox, modelId: modelId);
+            var info = await doc.Host.OpenSessionAsync(adapterId, workingDirectory, skipPermissions: skipPermissions,
+                mcpApproval: McpApproval, gitCredentialMode: gitCredentialMode, useSandbox: useSandbox,
+                modelId: modelId, reasoningEffortId: reasoningEffortId);
             var view = await doc.Host.SubscribeAsync(info.SessionId);
             var title = ProjectTitle(info.WorkingDirectory, displayName);
             _dispatcher.Post(() =>
@@ -3888,7 +3890,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, ITabControll
         var modelId = source.EffectiveModelId ?? source.Session?.CurrentModelId;
         return SelectAgentAsync(
             doc, descriptor.AdapterId, source.AgentName ?? descriptor.AdapterId,
-            source.SkipPermissions, source.GitCredentialMode, source.UseSandbox && source.SandboxAvailable, modelId);
+            source.SkipPermissions, source.GitCredentialMode, source.UseSandbox && source.SandboxAvailable, modelId,
+            source.EffectiveReasoningEffortId ?? source.Session?.CurrentReasoningEffortId);
     }
 
     // ---- launch profiles (providers/04): named, reusable new-session launch configs ----
@@ -3924,7 +3927,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, ITabControll
         var dir = string.IsNullOrWhiteSpace(doc.WorkingDirectory) ? null : doc.WorkingDirectory.Trim();
         var profile = new LaunchProfile(
             string.Empty, name.Trim(), agent.AdapterId, dir, UseWorktree: false,
-            doc.SkipPermissions, McpApproval, doc.GitCredentialMode, doc.SandboxAvailable && doc.UseSandbox, doc.EffectiveModelId);
+            doc.SkipPermissions, McpApproval, doc.GitCredentialMode, doc.SandboxAvailable && doc.UseSandbox,
+            doc.EffectiveModelId, ReasoningEffortId: doc.EffectiveReasoningEffortId);
 
         try
         {

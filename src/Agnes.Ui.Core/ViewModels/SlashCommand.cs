@@ -5,8 +5,20 @@ namespace Agnes.Ui.Core.ViewModels;
 /// <see cref="Agnes.Abstractions.PromptTemplate"/> also carries <see cref="SendImmediately"/> (InsertAndSend)
 /// and <see cref="IsBroken"/> (its referenced prompt was deleted — surfaced, never silently empty).
 /// </summary>
-public sealed record SlashCommand(string Name, string Description, string Expansion, bool SendImmediately = false, bool IsBroken = false)
+public sealed record SlashCommand(
+    string Name,
+    string Description,
+    string Expansion,
+    bool SendImmediately = false,
+    bool IsBroken = false,
+    string? AgentCommandId = null,
+    bool AcceptsArguments = false,
+    string? ArgumentHint = null)
 {
+    public string DisplayToken => AcceptsArguments && !string.IsNullOrWhiteSpace(ArgumentHint)
+        ? $"/{Name} <{ArgumentHint}>"
+        : $"/{Name}";
+
     /// <summary>Built-in commands available in every session.</summary>
     public static readonly IReadOnlyList<SlashCommand> BuiltIns =
     [

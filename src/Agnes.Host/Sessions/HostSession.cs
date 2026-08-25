@@ -114,6 +114,8 @@ internal sealed class HostSession : IAsyncDisposable
     /// <summary>The agent's own session id (used to resume it after a host restart).</summary>
     public string AgentSessionId => _agent.AgentSessionId;
 
+    public ReasoningEffortCapability? ReasoningEffort => _agent.ReasoningEffort;
+
     // A forked session's seed: the parent's transcript context, prepended to the FIRST real prompt's agent
     // call so the agent has the branch's history — but never logged as a visible user message (see
     // ForkedFromEvent). Cleared after it's consumed once.
@@ -459,8 +461,17 @@ internal sealed class HostSession : IAsyncDisposable
 
     public Task SetModeAsync(string modeId) => _agent.SetModeAsync(modeId, _cts.Token);
 
+    public Task SetReasoningEffortAsync(string effortId) => _agent.SetReasoningEffortAsync(effortId, _cts.Token);
+
+    public Task ExecuteCommandAsync(string commandId, string? argument)
+        => _agent.ExecuteCommandAsync(commandId, argument, _cts.Token);
+
+    public Task AppendSessionEventAsync(SessionEvent @event) => AppendAndPublishAsync(@event);
+
     public IReadOnlyList<Agnes.Abstractions.SessionMode> Modes => _agent.Modes;
     public string? CurrentModeId => _agent.CurrentModeId;
+    public IReadOnlyList<Agnes.Abstractions.AgentCommandInfo> Commands => _agent.Commands;
+    public Agnes.Abstractions.ProviderGoalInfo? ProviderGoal => _agent.ProviderGoal;
 
     public Task RespondToPermissionAsync(string requestId, string optionId)
     {
@@ -536,6 +547,16 @@ internal sealed class HostSession : IAsyncDisposable
     {
         try
         {
+            // Session capabilities are live provider data, but clients also need them after a host/client
+            // restart when the agent is deliberately dormant. Put the discovered command set on the event
+            // spine once per launch so snapshot replay restores autocomplete without a hard-coded catalogue.
+            // Execution still validates against the currently live agent descriptor; sessions without a
+            // discovered command capability do not add a redundant event to every transcript.
+            if (_agent.Commands.Count > 0)
+            {
+                await AppendAndPublishAsync(new AgentCommandsChangedEvent(_agent.Commands)).ConfigureAwait(false);
+            }
+
             await foreach (var @event in _agent.Events.ReadAllAsync(_cts.Token).ConfigureAwait(false))
             {
                 if (@event is SessionStartedEvent started && !string.IsNullOrEmpty(started.AgentSessionId))

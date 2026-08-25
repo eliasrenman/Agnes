@@ -72,6 +72,9 @@ public sealed record AgentSessionOptions
     /// </summary>
     public string? ModelId { get; init; }
 
+    /// <summary>Opaque provider reasoning-effort value requested for this session, or null for its default.</summary>
+    public string? ReasoningEffortId { get; init; }
+
     /// <summary>
     /// Additional system-prompt text to prepend to this session's effective system prompt — assembled at open
     /// from the library's enabled system-prompt additions (see
@@ -252,7 +255,41 @@ public interface IAgentSession : IAsyncDisposable
 
     /// <summary>Switches the session mode (ACP <c>session/set_mode</c>).</summary>
     Task SetModeAsync(string modeId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    /// <summary>Provider-reported reasoning-effort capability for this live session, when supported.</summary>
+    ReasoningEffortCapability? ReasoningEffort => null;
+
+    /// <summary>Changes the reasoning effort used by subsequent turns.</summary>
+    Task SetReasoningEffortAsync(string effortId, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This session does not support reasoning-effort changes.");
+
+    /// <summary>Provider-native commands proven available by this live session.</summary>
+    IReadOnlyList<AgentCommandInfo> Commands => [];
+
+    /// <summary>The provider-native goal attached to this session, when exposed.</summary>
+    ProviderGoalInfo? ProviderGoal => null;
+
+    /// <summary>Executes an opaque command id previously advertised through <see cref="Commands"/>.</summary>
+    Task ExecuteCommandAsync(string commandId, string? argument, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("This session does not expose provider-native commands.");
 }
 
 /// <summary>A selectable session mode offered by an agent (e.g. Ask, Code, Plan).</summary>
 public sealed record SessionMode(string Id, string Name);
+
+/// <summary>A provider-native composer command discovered from a live session capability.</summary>
+public sealed record AgentCommandInfo(
+    string Id,
+    string Name,
+    string Description,
+    string? ArgumentHint = null,
+    bool AcceptsArguments = false,
+    bool AvailableDuringTurn = false);
+
+/// <summary>Current provider-owned goal state, distinct from Agnes's host-side standing goals.</summary>
+public sealed record ProviderGoalInfo(
+    string Objective,
+    string Status,
+    long? TokenBudget = null,
+    long? TokensUsed = null,
+    long? TimeUsedSeconds = null);

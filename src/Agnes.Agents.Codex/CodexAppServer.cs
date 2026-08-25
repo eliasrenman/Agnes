@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Threading.Channels;
 using Agnes.Abstractions;
+using Agnes.Agents.Codex.Wire;
 using Microsoft.Extensions.Logging;
 
 namespace Agnes.Agents.Codex;
@@ -24,11 +25,21 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
 {
     private readonly CodexLaunchSpec _spec;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<CodexModel>>>? _modelProbeOverride;
 
     public CodexAppServerAdapter(CodexLaunchSpec spec, ILoggerFactory loggerFactory)
+        : this(spec, loggerFactory, modelProbeOverride: null)
+    {
+    }
+
+    internal CodexAppServerAdapter(
+        CodexLaunchSpec spec,
+        ILoggerFactory loggerFactory,
+        Func<CancellationToken, Task<IReadOnlyList<CodexModel>>>? modelProbeOverride)
     {
         _spec = spec;
         _loggerFactory = loggerFactory;
+        _modelProbeOverride = modelProbeOverride;
     }
 
     public AgentDescriptor Descriptor => _spec.Descriptor;
@@ -43,8 +54,44 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
         new ModelInfo("gpt-5", "GPT-5"),
     ];
 
-    public Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<ModelInfo>?>(null);
+    public async Task<IReadOnlyList<ModelInfo>?> ListModelsAsync(CancellationToken ct = default)
+    {
+        CodexConnection? connection = null;
+        try
+        {
+            if (_modelProbeOverride is not null)
+            {
+                return (await _modelProbeOverride(ct).ConfigureAwait(false)).Select(ToModelInfo).ToArray();
+            }
+
+            var options = new AgentSessionOptions { WorkingDirectory = Environment.CurrentDirectory };
+            var process = StartProcess(options);
+            connection = new CodexConnection(
+                process.StandardInput.BaseStream,
+                process.StandardOutput.BaseStream,
+                _loggerFactory.CreateLogger<CodexConnection>(),
+                new ProcessLifetime(process, _loggerFactory.CreateLogger<CodexAppServerAdapter>()));
+            await connection.InitializeAsync(ct).ConfigureAwait(false);
+            return (await connection.ListModelsAsync(ct).ConfigureAwait(false)).Select(ToModelInfo).ToArray();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _loggerFactory.CreateLogger<CodexAppServerAdapter>()
+                .LogWarning(ex, "Codex model discovery failed; using the static fallback without effort metadata");
+            return null;
+        }
+        finally
+        {
+            if (connection is not null)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
 
     public async Task<IAgentSession> StartSessionAsync(AgentSessionOptions options, CancellationToken cancellationToken = default)
     {
@@ -59,11 +106,17 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
         {
             await connection.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
+            var liveModels = await connection.ListModelsAsync(cancellationToken).ConfigureAwait(false);
+            var selectedModel = SelectModel(liveModels, options.ModelId);
+            var reasoning = CreateReasoningCapability(selectedModel, options.ReasoningEffortId);
+
             // Ask-per-tool by default (Codex sends approval requests); autonomous opts out of prompts.
             var approvalPolicy = options.SkipPermissions ? "never" : "on-request";
             var sandbox = options.SkipPermissions && options.Sandbox is not null ? "danger-full-access" : "workspace-write";
 
-            var session = await connection.StartThreadAsync(options.WorkingDirectory, approvalPolicy, sandbox, options.ModelId, cancellationToken).ConfigureAwait(false);
+            var effectiveModel = options.ModelId ?? selectedModel?.Id;
+            var session = await connection.StartThreadAsync(
+                options.WorkingDirectory, approvalPolicy, sandbox, effectiveModel, cancellationToken, reasoning).ConfigureAwait(false);
 
             // Disposing the session tears down the connection (and kills the app-server process).
             return new ConnectionOwningSession(session, connection);
@@ -74,6 +127,61 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
             throw;
         }
     }
+
+    private static CodexModel? SelectModel(IReadOnlyList<CodexModel> models, string? modelId)
+        => string.IsNullOrWhiteSpace(modelId)
+            ? models.FirstOrDefault(m => m.IsDefault) ?? models.FirstOrDefault()
+            : models.FirstOrDefault(m => string.Equals(m.Id, modelId, StringComparison.Ordinal)
+                || string.Equals(m.Model, modelId, StringComparison.Ordinal));
+
+    internal static ReasoningEffortCapability? CreateReasoningCapability(CodexModel? model, string? requestedEffort)
+    {
+        if (model is null)
+        {
+            if (!string.IsNullOrWhiteSpace(requestedEffort))
+            {
+                throw new ArgumentException(
+                    $"Codex did not report metadata for the selected model, so reasoning effort '{requestedEffort}' cannot be validated.",
+                    nameof(requestedEffort));
+            }
+
+            return null;
+        }
+
+        var supported = model.SupportedReasoningEfforts.Select(ToReasoningEffortInfo).ToArray();
+        if (supported.Length == 0)
+        {
+            if (!string.IsNullOrWhiteSpace(requestedEffort))
+            {
+                throw new ArgumentException($"Model '{model.Id}' does not support configurable reasoning effort.", nameof(requestedEffort));
+            }
+
+            return null;
+        }
+
+        var effective = string.IsNullOrWhiteSpace(requestedEffort) ? model.DefaultReasoningEffort : requestedEffort;
+        if (effective is null || supported.All(v => !string.Equals(v.Id, effective, StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(CodexAgentSession.UnsupportedEffortMessage(effective ?? "<default>", supported), nameof(requestedEffort));
+        }
+
+        return new ReasoningEffortCapability(supported, model.DefaultReasoningEffort, effective, SupportsRuntimeChanges: true);
+    }
+
+    internal static ModelInfo ToModelInfo(CodexModel model)
+        => new(
+            model.Id,
+            model.DisplayName,
+            IsCustomEntryAllowed: true,
+            model.SupportedReasoningEfforts.Select(ToReasoningEffortInfo).ToArray(),
+            model.DefaultReasoningEffort);
+
+    private static ReasoningEffortInfo ToReasoningEffortInfo(CodexReasoningEffortOption effort)
+        => new(effort.ReasoningEffort, DisplayEffort(effort.ReasoningEffort), effort.Description);
+
+    private static string DisplayEffort(string value)
+        => string.Join(' ', value.Split(['-', '_'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
 
     private Process StartProcess(AgentSessionOptions options)
     {
@@ -125,10 +233,15 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
     }
 
     /// <summary>Wraps the session so disposing it also disposes the owning connection (and process).</summary>
-    private sealed class ConnectionOwningSession(IAgentSession inner, IAsyncDisposable owner) : IAgentSession
+    internal sealed class ConnectionOwningSession(IAgentSession inner, IAsyncDisposable owner) : IAgentSession
     {
         public string AgentSessionId => inner.AgentSessionId;
         public ChannelReader<SessionEvent> Events => inner.Events;
+        public ReasoningEffortCapability? ReasoningEffort => inner.ReasoningEffort;
+        public IReadOnlyList<SessionMode> Modes => inner.Modes;
+        public string? CurrentModeId => inner.CurrentModeId;
+        public IReadOnlyList<AgentCommandInfo> Commands => inner.Commands;
+        public ProviderGoalInfo? ProviderGoal => inner.ProviderGoal;
 
         public Task<StopReason> PromptAsync(IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken = default)
             => inner.PromptAsync(content, cancellationToken);
@@ -137,6 +250,18 @@ public sealed class CodexAppServerAdapter : IAgentAdapter, IModelListingAdapter
 
         public Task RespondToPermissionAsync(string requestId, string optionId, CancellationToken cancellationToken = default)
             => inner.RespondToPermissionAsync(requestId, optionId, cancellationToken);
+
+        public Task AnswerQuestionAsync(string requestId, IReadOnlyList<QuestionAnswer> answers, CancellationToken cancellationToken = default)
+            => inner.AnswerQuestionAsync(requestId, answers, cancellationToken);
+
+        public Task SetReasoningEffortAsync(string effortId, CancellationToken cancellationToken = default)
+            => inner.SetReasoningEffortAsync(effortId, cancellationToken);
+
+        public Task SetModeAsync(string modeId, CancellationToken cancellationToken = default)
+            => inner.SetModeAsync(modeId, cancellationToken);
+
+        public Task ExecuteCommandAsync(string commandId, string? argument, CancellationToken cancellationToken = default)
+            => inner.ExecuteCommandAsync(commandId, argument, cancellationToken);
 
         public async ValueTask DisposeAsync()
         {

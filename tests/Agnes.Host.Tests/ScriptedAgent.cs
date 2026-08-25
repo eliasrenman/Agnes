@@ -13,6 +13,8 @@ public sealed class ScriptedAgentSession : IAgentSession
 
     public ChannelReader<SessionEvent> Events => _events.Reader;
 
+    public IReadOnlyList<AgentCommandInfo> Commands { get; set; } = [];
+
     /// <summary>Simulates the CLI process dying: completes the event stream without an intentional stop,
     /// which the host reads as an unexpected fault.</summary>
     public void Die() => _events.Writer.TryComplete();

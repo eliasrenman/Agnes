@@ -14,7 +14,9 @@ public sealed record ModelOption(
     string DisplayName,
     bool IsCustomEntryAllowed,
     bool IsFavorite,
-    bool IsAvailable);
+    bool IsAvailable,
+    IReadOnlyList<ReasoningEffortInfo>? SupportedReasoningEfforts = null,
+    string? DefaultReasoningEffortId = null);
 
 /// <summary>
 /// Reconciles a client's favorites against an agent's current model catalog. Pure over its inputs (no UI, no
@@ -41,7 +43,8 @@ public static class ModelCatalogReconciler
             catalogIds.Add(model.Id);
             options.Add(new ModelOption(
                 model.Id, model.DisplayName, model.IsCustomEntryAllowed,
-                IsFavorite: favoriteIds.Contains(model.Id), IsAvailable: true));
+                IsFavorite: favoriteIds.Contains(model.Id), IsAvailable: true,
+                model.SupportedReasoningEfforts, model.DefaultReasoningEffortId));
         }
 
         // A favorite the provider has since removed: shown as a no-longer-available row, never as a working one.

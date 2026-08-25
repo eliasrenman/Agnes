@@ -28,6 +28,7 @@ public sealed class SessionViewModel : ObservableObject
     // The host's prompt library, loaded lazily so typing a template's slash token (e.g. /review) expands it.
     private IReadOnlyList<Agnes.Abstractions.LibraryPrompt> _libraryPrompts = [];
     private IReadOnlyList<Agnes.Abstractions.PromptTemplate> _promptTemplates = [];
+    private IReadOnlyList<AgentCommandInfo> _agentCommands;
     private readonly TranscriptBuilder _transcript = new();
     private readonly Dictionary<string, ToolEntry> _tools = new();
     private readonly Dictionary<string, string> _permissionTitles = new();
@@ -52,6 +53,10 @@ public sealed class SessionViewModel : ObservableObject
     private string? _currentModelId;
     private ModelInfo? _selectedModel;
     private bool _applyingModel;
+    private ReasoningEffortCapability? _reasoningEffort;
+    private ProviderGoalInfo? _providerGoal;
+    private bool _changingReasoningEffort;
+    private string _reasoningEffortError = string.Empty;
     private SandboxStatus? _sandbox;
     private GitStatus? _git;
     private string _commitMessage = string.Empty;
@@ -159,6 +164,9 @@ public sealed class SessionViewModel : ObservableObject
 
         _currentModeId = view.Info?.CurrentModeId;
         _currentModelId = view.Info?.CurrentModelId;
+        _reasoningEffort = view.Info?.ReasoningEffort;
+        _agentCommands = view.Info?.Commands ?? [];
+        _providerGoal = view.Info?.ProviderGoal;
         // Populate the mid-session model picker from the host (best-effort; empty for adapters with no
         // model axis, which hides the picker).
         _ = LoadModelsAsync(view.Info?.AdapterId);
@@ -860,6 +868,7 @@ public sealed class SessionViewModel : ObservableObject
                 CancelCommand.NotifyCanExecuteChanged();
                 RaiseActivity();
                 OnPropertyChanged(nameof(SendGestureHint));
+                OnPropertyChanged(nameof(CanChangeReasoningEffort));
             }
         }
     }
@@ -1196,6 +1205,14 @@ public sealed class SessionViewModel : ObservableObject
 
     public string CurrentModeName => Modes.FirstOrDefault(m => m.Id == _currentModeId)?.Name ?? _currentModeId ?? string.Empty;
 
+    public ProviderGoalInfo? ProviderGoal => _providerGoal;
+
+    public bool HasProviderGoal => _providerGoal is not null;
+
+    public string ProviderGoalSummary => _providerGoal is null
+        ? string.Empty
+        : $"{_providerGoal.Objective} · {_providerGoal.Status}";
+
     private async Task SetModeAsync(SessionMode mode)
     {
         CurrentModeId = mode.Id; // optimistic; ModeChangedEvent will confirm
@@ -1217,6 +1234,82 @@ public sealed class SessionViewModel : ObservableObject
     }
 
     public string CurrentModelName => AvailableModels.FirstOrDefault(m => m.Id == _currentModelId)?.DisplayName ?? _currentModelId ?? "default";
+
+    // ---- Codex reasoning effort (provider values remain opaque) ----
+
+    public IReadOnlyList<ReasoningEffortInfo> AvailableReasoningEfforts => _reasoningEffort?.SupportedValues ?? [];
+
+    public bool HasReasoningEffortSelector
+        => _reasoningEffort is { SupportsRuntimeChanges: true, SupportedValues.Count: > 0 };
+
+    public bool CanChangeReasoningEffort => HasReasoningEffortSelector && !IsTurnActive && !_changingReasoningEffort;
+
+    public string? CurrentReasoningEffortId => _reasoningEffort?.CurrentEffortId;
+
+    public ReasoningEffortInfo? SelectedReasoningEffort
+    {
+        get => AvailableReasoningEfforts.FirstOrDefault(e => e.Id == CurrentReasoningEffortId);
+        set
+        {
+            if (value is not null && value.Id != CurrentReasoningEffortId && CanChangeReasoningEffort)
+            {
+                _ = RequestReasoningEffortAsync(value.Id);
+                OnPropertyChanged(); // retain the confirmed selection until the host event arrives
+            }
+        }
+    }
+
+    public string ReasoningEffortError
+    {
+        get => _reasoningEffortError;
+        private set
+        {
+            if (SetProperty(ref _reasoningEffortError, value))
+            {
+                OnPropertyChanged(nameof(HasReasoningEffortError));
+            }
+        }
+    }
+
+    public bool HasReasoningEffortError => ReasoningEffortError.Length > 0;
+
+    private async Task RequestReasoningEffortAsync(string effortId)
+    {
+        _changingReasoningEffort = true;
+        ReasoningEffortError = string.Empty;
+        OnPropertyChanged(nameof(CanChangeReasoningEffort));
+        try
+        {
+            await _host.SetReasoningEffortAsync(SessionId, effortId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _dispatcher.Post(() =>
+            {
+                ReasoningEffortError = ex.Message;
+                OnPropertyChanged(nameof(SelectedReasoningEffort));
+            });
+        }
+        finally
+        {
+            _dispatcher.Post(() =>
+            {
+                _changingReasoningEffort = false;
+                OnPropertyChanged(nameof(CanChangeReasoningEffort));
+            });
+        }
+    }
+
+    private void ApplyReasoningEffort(ReasoningEffortCapability capability)
+    {
+        _reasoningEffort = capability;
+        ReasoningEffortError = string.Empty;
+        OnPropertyChanged(nameof(AvailableReasoningEfforts));
+        OnPropertyChanged(nameof(HasReasoningEffortSelector));
+        OnPropertyChanged(nameof(CanChangeReasoningEffort));
+        OnPropertyChanged(nameof(CurrentReasoningEffortId));
+        OnPropertyChanged(nameof(SelectedReasoningEffort));
+    }
 
     /// <summary>Two-way bound to the picker. A genuine user selection relaunches the agent on the new model
     /// (the host resumes the conversation); a programmatic set during the initial load must not trigger a
@@ -1750,6 +1843,12 @@ public sealed class SessionViewModel : ObservableObject
             return;
         }
 
+        if (command.AgentCommandId is not null && command.AcceptsArguments
+            && PromptText.StartsWith($"/{command.Name} ", StringComparison.OrdinalIgnoreCase))
+        {
+            return; // keep the argument the user has already typed when re-selecting its preview
+        }
+
         PromptText = command.Expansion;
         if (command.SendImmediately && SendCommand.CanExecute(null))
         {
@@ -1763,8 +1862,27 @@ public sealed class SessionViewModel : ObservableObject
         var text = PromptText;
         if (text.StartsWith('/') && !text.Contains('\n'))
         {
-            var query = text[1..];
-            foreach (var c in SlashCommand.BuiltIns.Where(c => c.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase)))
+            var raw = text[1..];
+            var separator = raw.IndexOfAny([' ', '\t']);
+            var query = separator < 0 ? raw : raw[..separator];
+            var hasArgument = separator >= 0;
+            foreach (var command in _agentCommands.Where(c =>
+                         c.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase)
+                         && (!hasArgument || c.AcceptsArguments
+                             && string.Equals(c.Name, query, StringComparison.OrdinalIgnoreCase))))
+            {
+                SlashSuggestions.Add(new SlashCommand(
+                    command.Name,
+                    command.Description,
+                    $"/{command.Name}" + (command.AcceptsArguments ? " " : string.Empty),
+                    SendImmediately: !command.AcceptsArguments,
+                    AgentCommandId: command.Id,
+                    AcceptsArguments: command.AcceptsArguments,
+                    ArgumentHint: command.ArgumentHint));
+            }
+
+            foreach (var c in SlashCommand.BuiltIns.Where(c => !hasArgument
+                         && c.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase)))
             {
                 SlashSuggestions.Add(c);
             }
@@ -1772,7 +1890,7 @@ public sealed class SessionViewModel : ObservableObject
             foreach (var template in _promptTemplates)
             {
                 var token = template.SlashToken.TrimStart('/');
-                if (!token.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+                if (hasArgument || !token.StartsWith(query, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -1933,6 +2051,22 @@ public sealed class SessionViewModel : ObservableObject
 
             case ModeChangedEvent mode:
                 CurrentModeId = mode.ModeId;
+                break;
+
+            case ReasoningEffortChangedEvent reasoning:
+                ApplyReasoningEffort(reasoning.Capability);
+                break;
+
+            case AgentCommandsChangedEvent commands:
+                _agentCommands = commands.Commands;
+                UpdateSlash();
+                break;
+
+            case ProviderGoalChangedEvent providerGoal:
+                _providerGoal = providerGoal.Goal;
+                OnPropertyChanged(nameof(ProviderGoal));
+                OnPropertyChanged(nameof(HasProviderGoal));
+                OnPropertyChanged(nameof(ProviderGoalSummary));
                 break;
 
             case PendingQueueEvent queue:
@@ -2256,6 +2390,23 @@ public sealed class SessionViewModel : ObservableObject
             return;
         }
 
+        if (TryProviderCommand(text, out var providerCommand, out var argument))
+        {
+            try
+            {
+                await _host.ExecuteAgentCommandAsync(SessionId, providerCommand.Id, argument);
+                Record(text);
+                PromptText = string.Empty;
+            }
+            catch (Exception ex)
+            {
+                NotificationRaised?.Invoke(new AppNotification(
+                    $"/{providerCommand.Name} failed", ex.GetBaseException().Message,
+                    NotificationKind.Error, SessionId));
+            }
+            return;
+        }
+
         Record(text);
         PromptText = string.Empty;
 
@@ -2277,6 +2428,28 @@ public sealed class SessionViewModel : ObservableObject
         }
 
         await SubmitAsync(text);
+    }
+
+    private bool TryProviderCommand(string text, out AgentCommandInfo command, out string? argument)
+    {
+        command = null!;
+        argument = null;
+        if (!text.StartsWith('/'))
+        {
+            return false;
+        }
+
+        var separator = text.IndexOfAny([' ', '\t', '\r', '\n']);
+        var token = separator < 0 ? text[1..] : text[1..separator];
+        command = _agentCommands.FirstOrDefault(
+            c => string.Equals(c.Name, token, StringComparison.OrdinalIgnoreCase))!;
+        if (command is null)
+        {
+            return false;
+        }
+
+        argument = separator < 0 ? null : text[(separator + 1)..].Trim();
+        return true;
     }
 
     // Steer: stop the current turn and send this prompt now (skips the queue).

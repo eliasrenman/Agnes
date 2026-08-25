@@ -544,7 +544,7 @@ public sealed class SessionManager : IAsyncDisposable
         new HostCapability(HostCapabilityIds.SandboxProvider, SandboxAvailable, FailClosed: false),
     ];
 
-    public async Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? owner = null, CancellationToken cancellationToken = default)
+    public async Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null, string? owner = null, CancellationToken cancellationToken = default)
     {
         // Event spine: a plugin may redirect the adapter/working directory or veto the open.
         var open = await _bus.DispatchAsync(new Agnes.Abstractions.Events.BeforeSessionOpenEvent(adapterId, workingDirectory), cancellationToken).ConfigureAwait(false);
@@ -578,7 +578,7 @@ public sealed class SessionManager : IAsyncDisposable
 
         var info = await OpenSessionCoreAsync(
             sessionId, adapterId, effectiveDirectory, skipPermissions, mcpApproval, gitCredentialMode,
-            useSandbox, modelId, existingSandbox: null, worktree: useWorktree, cancellationToken, owner: owner).ConfigureAwait(false);
+            useSandbox, modelId, reasoningEffortId, existingSandbox: null, worktree: useWorktree, cancellationToken, owner: owner).ConfigureAwait(false);
         await _bus.DispatchAsync(new Agnes.Abstractions.Events.SessionOpenedEvent(info.SessionId, adapterId), cancellationToken).ConfigureAwait(false);
         return info;
     }
@@ -672,7 +672,7 @@ public sealed class SessionManager : IAsyncDisposable
     /// </summary>
     private async Task<SessionInfo> OpenSessionCoreAsync(
         string sessionId, string adapterId, string effectiveDirectory,
-        bool skipPermissions, string mcpApproval, string gitCredentialMode, bool useSandbox, string? modelId,
+        bool skipPermissions, string mcpApproval, string gitCredentialMode, bool useSandbox, string? modelId, string? reasoningEffortId,
         ISandbox? existingSandbox, bool worktree, CancellationToken cancellationToken, string? resumeSessionId = null, string? owner = null)
     {
         var adapter = _adapters.Find(adapterId);
@@ -809,6 +809,7 @@ public sealed class SessionManager : IAsyncDisposable
                 SkipPermissions = skipPermissions,
                 McpConfigPath = mcpConfigPath,
                 ModelId = modelId,
+                ReasoningEffortId = reasoningEffortId,
                 // A native-fork handoff (connectivity/03) resumes the CLI's own conversation from the token
                 // the source host exported; a plain open passes null and starts fresh.
                 ResumeSessionId = resumeSessionId,
@@ -818,12 +819,21 @@ public sealed class SessionManager : IAsyncDisposable
             },
             cancellationToken).ConfigureAwait(false);
 
+        if (!string.IsNullOrWhiteSpace(reasoningEffortId) && agent.ReasoningEffort is null)
+        {
+            await agent.DisposeAsync().ConfigureAwait(false);
+            throw new NotSupportedException($"Adapter '{adapterId}' does not support configurable reasoning effort.");
+        }
+
+        var effectiveReasoningEffortId = agent.ReasoningEffort?.CurrentEffortId;
+
         // Catalogue the session BEFORE tracking it: TrackSession starts the event pump, which fires
         // AgentSessionStarted (persisting the real agent session id) — that update must find the record.
         // Persist the initial (placeholder-id) record first so it can't overwrite the real id afterwards.
         var record = new SessionRecord(
             sessionId, adapterId, effectiveDirectory, agent.AgentSessionId,
-            worktree, skipPermissions, sandbox is not null, DateTimeOffset.UtcNow, modelId, owner, group);
+            worktree, skipPermissions, sandbox is not null, DateTimeOffset.UtcNow, modelId, owner, group,
+            effectiveReasoningEffortId);
         _catalog[sessionId] = record;
         await _store.SaveSessionAsync(record, cancellationToken).ConfigureAwait(false);
 
@@ -831,7 +841,10 @@ public sealed class SessionManager : IAsyncDisposable
         _logger.LogInformation("Opened session {SessionId} on {AdapterId}", sessionId, adapterId);
 
         var head = await _store.GetHeadAsync(sessionId, cancellationToken).ConfigureAwait(false);
-        return new SessionInfo(sessionId, adapterId, effectiveDirectory, head, agent.Modes, agent.CurrentModeId, MapSandbox(sandbox), skipPermissions, project?.Name, CurrentModelId: modelId);
+        return new SessionInfo(sessionId, adapterId, effectiveDirectory, head, agent.Modes, agent.CurrentModeId,
+            MapSandbox(sandbox), skipPermissions, project?.Name, CurrentModelId: modelId,
+            ReasoningEffortId: effectiveReasoningEffortId, ReasoningEffort: agent.ReasoningEffort,
+            Commands: agent.Commands, ProviderGoal: agent.ProviderGoal);
     }
 
     /// <summary>Computes a fork plan for a live session: a proposed non-existing target folder (numeral-
@@ -897,7 +910,8 @@ public sealed class SessionManager : IAsyncDisposable
 
         return await OpenSessionCoreAsync(
             sessionId, adapterId, targetDirectory, skipPermissions, mcpApproval, gitCredentialMode,
-            useSandbox: sourceSandboxed, modelId: null, existingSandbox: clonedSandbox, worktree: false, cancellationToken,
+            useSandbox: sourceSandboxed, modelId: cat?.ModelId, reasoningEffortId: cat?.ReasoningEffortId,
+            existingSandbox: clonedSandbox, worktree: false, cancellationToken,
             owner: cat?.Owner).ConfigureAwait(false); // a fork inherits the source session's owner.
     }
 
@@ -994,7 +1008,7 @@ public sealed class SessionManager : IAsyncDisposable
         var info = await OpenSessionCoreAsync(
             sessionId, state.AdapterId, targetWorkingDirectory,
             skipPermissions: false, mcpApproval: "Ask", gitCredentialMode: "Off",
-            useSandbox: false, modelId: null, existingSandbox: null, worktree: false,
+            useSandbox: false, modelId: null, reasoningEffortId: null, existingSandbox: null, worktree: false,
             cancellationToken, resumeSessionId).ConfigureAwait(false);
 
         // Mark the child's log with its origin, then (for replay) seed the reconstructed transcript invisibly —
@@ -1411,11 +1425,20 @@ public sealed class SessionManager : IAsyncDisposable
                 // Carry the session's chosen model across the relaunch (crash-recovery, restart, or an explicit
                 // model switch); without this a relaunch silently reverted to the CLI's default model.
                 ModelId = record.ModelId,
+                ReasoningEffortId = record.ReasoningEffortId,
                 // Only resume when the agent reported a real session id (a UUID); the pre-init placeholder
                 // (a dash-less GUID) would make `--resume` fail, so start fresh in that case.
                 ResumeSessionId = LooksResumable(record.AgentSessionId) ? record.AgentSessionId : null,
             },
             cancellationToken).ConfigureAwait(false);
+
+        var effectiveEffort = agent.ReasoningEffort?.CurrentEffortId;
+        if (!string.Equals(record.ReasoningEffortId, effectiveEffort, StringComparison.Ordinal))
+        {
+            record = record with { ReasoningEffortId = effectiveEffort };
+            _catalog[sessionId] = record;
+            await _store.SaveSessionAsync(record, cancellationToken).ConfigureAwait(false);
+        }
 
         return TrackSession(sessionId, record.AdapterId, effectiveDirectory, agent);
     }
@@ -1573,10 +1596,32 @@ public sealed class SessionManager : IAsyncDisposable
             return; // already on this model
         }
 
+        var nextEffort = record.ReasoningEffortId;
+        var effortReset = false;
+        if (nextEffort is not null)
+        {
+            if (normalized is null)
+            {
+                nextEffort = null;
+                effortReset = true;
+            }
+            else if (_adapters.Find(record.AdapterId) is IModelListingAdapter listing)
+            {
+                var models = await ModelCatalog.ResolveAsync(listing).ConfigureAwait(false);
+                var target = models.FirstOrDefault(m => string.Equals(m.Id, normalized, StringComparison.Ordinal));
+                var supported = target?.SupportedReasoningEfforts ?? [];
+                if (supported.All(e => !string.Equals(e.Id, nextEffort, StringComparison.Ordinal)))
+                {
+                    nextEffort = target?.DefaultReasoningEffortId;
+                    effortReset = true;
+                }
+            }
+        }
+
         await _attachGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var updated = record with { ModelId = normalized };
+            var updated = record with { ModelId = normalized, ReasoningEffortId = nextEffort };
             _catalog[sessionId] = updated;
             await _store.SaveSessionAsync(updated, CancellationToken.None).ConfigureAwait(false);
 
@@ -1589,6 +1634,21 @@ public sealed class SessionManager : IAsyncDisposable
             await AppendNoticeAsync(sessionId, $"Switching model to {normalized ?? "the default"}…").ConfigureAwait(false);
             await RelaunchAgentAsync(sessionId, CancellationToken.None).ConfigureAwait(false);
             await AppendNoticeAsync(sessionId, $"Model is now {normalized ?? "the CLI default"}.").ConfigureAwait(false);
+            if (_sessions.TryGetValue(sessionId, out var relaunched) && relaunched.ReasoningEffort is { } confirmedEffort)
+            {
+                await relaunched.AppendSessionEventAsync(new ReasoningEffortChangedEvent(confirmedEffort)).ConfigureAwait(false);
+            }
+            if (effortReset)
+            {
+                var effective = _catalog.TryGetValue(sessionId, out var effectiveRecord)
+                    ? effectiveRecord.ReasoningEffortId
+                    : nextEffort;
+                await AppendNoticeAsync(
+                    sessionId,
+                    effective is null
+                        ? "Reasoning effort returned to the provider default for the new model."
+                        : $"Reasoning effort is now {effective}, the new model's default.").ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
@@ -1987,7 +2047,9 @@ public sealed class SessionManager : IAsyncDisposable
             var liveHead = await _store.GetHeadAsync(sessionId, cancellationToken).ConfigureAwait(false);
             return new SessionInfo(sessionId, already.AdapterId, "/work", liveHead, already.Modes, already.CurrentModeId,
                 _sandboxBySession.TryGetValue(sessionId, out var s) ? MapSandbox(s) : null, false, null,
-                CurrentModelId: _catalog.TryGetValue(sessionId, out var arec) ? arec.ModelId : null);
+                CurrentModelId: _catalog.TryGetValue(sessionId, out var arec) ? arec.ModelId : null,
+                ReasoningEffortId: arec?.ReasoningEffortId, ReasoningEffort: already.ReasoningEffort,
+                Commands: already.Commands, ProviderGoal: already.ProviderGoal);
         }
 
         var record = _sandboxRegistry?.Get(sessionId)
@@ -2019,7 +2081,9 @@ public sealed class SessionManager : IAsyncDisposable
         var project = StateOrNull(sessionId)?.Project;
         return new SessionInfo(sessionId, record.AdapterId, "/work", head, session.Modes, session.CurrentModeId,
             MapSandbox(sandbox), record.SkipPermissions, project?.Name,
-            CurrentModelId: _catalog.TryGetValue(sessionId, out var crec) ? crec.ModelId : null);
+            CurrentModelId: _catalog.TryGetValue(sessionId, out var crec) ? crec.ModelId : null,
+            ReasoningEffortId: crec?.ReasoningEffortId, ReasoningEffort: session.ReasoningEffort,
+            Commands: session.Commands, ProviderGoal: session.ProviderGoal);
     }
 
     /// <summary>Re-resolves the project for a working directory (same rule as open).</summary>
@@ -2500,6 +2564,66 @@ public sealed class SessionManager : IAsyncDisposable
         await (await EnsureLiveAsync(sessionId).ConfigureAwait(false)).SetModeAsync(before.ModeId).ConfigureAwait(false);
     }
 
+    public async Task SetReasoningEffortAsync(string sessionId, string effortId)
+    {
+        var before = await _bus.DispatchAsync(
+            new Agnes.Abstractions.Events.BeforeReasoningEffortChangeEvent(sessionId, effortId)).ConfigureAwait(false);
+        if (before.IsCanceled)
+        {
+            return;
+        }
+
+        var session = await EnsureLiveAsync(sessionId).ConfigureAwait(false);
+        var capability = session.ReasoningEffort
+            ?? throw new NotSupportedException("This session does not support configurable reasoning effort.");
+        if (!capability.SupportsRuntimeChanges)
+        {
+            throw new NotSupportedException("This session's reasoning effort cannot be changed after launch.");
+        }
+
+        if (session.IsTurnActive)
+        {
+            throw new InvalidOperationException("Reasoning effort cannot be changed while a turn is active.");
+        }
+
+        await session.SetReasoningEffortAsync(before.EffortId).ConfigureAwait(false);
+        var confirmed = session.ReasoningEffort
+            ?? throw new InvalidOperationException("The agent did not confirm its reasoning-effort state.");
+        if (_catalog.TryGetValue(sessionId, out var record))
+        {
+            var updated = record with { ReasoningEffortId = confirmed.CurrentEffortId };
+            _catalog[sessionId] = updated;
+            await _store.SaveSessionAsync(updated, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await session.AppendSessionEventAsync(new ReasoningEffortChangedEvent(confirmed)).ConfigureAwait(false);
+    }
+
+    public async Task ExecuteAgentCommandAsync(string sessionId, string commandId, string? argument)
+    {
+        var before = await _bus.DispatchAsync(
+            new Agnes.Abstractions.Events.BeforeAgentCommandExecuteEvent(sessionId, commandId, argument)).ConfigureAwait(false);
+        if (before.IsCanceled)
+        {
+            return;
+        }
+
+        var session = await EnsureLiveAsync(sessionId).ConfigureAwait(false);
+        var command = session.Commands.FirstOrDefault(c => string.Equals(c.Id, before.CommandId, StringComparison.Ordinal))
+            ?? throw new NotSupportedException($"Command '{before.CommandId}' is not advertised by this session.");
+        if (session.IsTurnActive && !command.AvailableDuringTurn)
+        {
+            throw new InvalidOperationException($"/{command.Name} cannot run while a turn is active.");
+        }
+
+        if (!command.AcceptsArguments && !string.IsNullOrWhiteSpace(before.Argument))
+        {
+            throw new ArgumentException($"/{command.Name} does not accept an argument.", nameof(argument));
+        }
+
+        await session.ExecuteCommandAsync(command.Id, before.Argument).ConfigureAwait(false);
+    }
+
     public Task<Agnes.Protocol.GitStatus> GetGitStatusAsync(string sessionId)
         => _git.GetStatusAsync(WorkingDirectoryOf(sessionId));
 
@@ -2770,7 +2894,8 @@ public sealed class SessionManager : IAsyncDisposable
         var skipPermissions = _catalog.TryGetValue(sessionId, out var rec) && rec.SkipPermissions;
         var info = new SessionInfo(sessionId, adapterId, workingDirectory, head,
             live?.Modes, live?.CurrentModeId, GetSandboxStatus(sessionId), skipPermissions, Project: null, ReadOnly: IsReadOnly(sessionId),
-            CurrentModelId: rec?.ModelId);
+            CurrentModelId: rec?.ModelId, ReasoningEffortId: rec?.ReasoningEffortId,
+            ReasoningEffort: live?.ReasoningEffort, Commands: live?.Commands, ProviderGoal: live?.ProviderGoal);
         return new SessionSnapshot(info, events, head);
     }
 

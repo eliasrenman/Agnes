@@ -22,6 +22,24 @@ internal sealed class FakeCodexAppServer : IAsyncDisposable
     /// <summary>The <c>answers</c> object the client returned for the last user-input request (null if none).</summary>
     public JsonElement? LastUserInputAnswers { get; private set; }
 
+    public List<JsonElement> ModelPages { get; } = [];
+
+    public List<string?> ModelListCursors { get; } = [];
+
+    public string? LastTurnEffort { get; private set; }
+
+    public JsonElement? Goal { get; set; }
+
+    public string? LastGoalObjective { get; private set; }
+
+    public int GoalClearCount { get; private set; }
+
+    public List<object> CollaborationModes { get; } = [];
+
+    public string? LastTurnCollaborationMode { get; private set; }
+
+    public bool InitializedNotificationReceived { get; private set; }
+
     public static (Stream Client, FakeCodexAppServer Server) Create()
     {
         var (a, b) = FullDuplexStream.CreatePair();
@@ -72,12 +90,84 @@ internal sealed class FakeCodexAppServer : IAsyncDisposable
         [JsonRpcMethod("initialize", UseSingleObjectParameterDeserialization = true)]
         public object Initialize(JsonElement _) => new { userAgent = "fake", codexHome = "/tmp/.codex" };
 
+        [JsonRpcMethod("initialized")]
+        public void Initialized() => server.InitializedNotificationReceived = true;
+
         [JsonRpcMethod("thread/start", UseSingleObjectParameterDeserialization = true)]
         public object ThreadStart(JsonElement _) => new { thread = new { id = "th-1" }, model = "gpt-test" };
 
-        [JsonRpcMethod("turn/start", UseSingleObjectParameterDeserialization = true)]
-        public async Task<object> TurnStart(JsonElement _)
+        [JsonRpcMethod("thread/goal/get", UseSingleObjectParameterDeserialization = true)]
+        public object GoalGet(JsonElement _)
         {
+            EnsureInitialized();
+            return new { goal = server.Goal };
+        }
+
+        [JsonRpcMethod("thread/goal/set", UseSingleObjectParameterDeserialization = true)]
+        public object GoalSet(JsonElement parameters)
+        {
+            server.LastGoalObjective = parameters.GetProperty("objective").GetString();
+            server.Goal = JsonSerializer.SerializeToElement(new
+            {
+                threadId = "th-1",
+                objective = server.LastGoalObjective,
+                status = "active",
+                tokenBudget = (long?)null,
+                tokensUsed = 0L,
+                timeUsedSeconds = 0L,
+            });
+            return new { goal = server.Goal };
+        }
+
+        [JsonRpcMethod("thread/goal/clear", UseSingleObjectParameterDeserialization = true)]
+        public object GoalClear(JsonElement _)
+        {
+            server.GoalClearCount++;
+            server.Goal = null;
+            return new { cleared = true };
+        }
+
+        [JsonRpcMethod("collaborationMode/list", UseSingleObjectParameterDeserialization = true)]
+        public object CollaborationModeList(JsonElement _)
+        {
+            EnsureInitialized();
+            return new { data = server.CollaborationModes };
+        }
+
+        private void EnsureInitialized()
+        {
+            if (!server.InitializedNotificationReceived)
+            {
+                throw new InvalidOperationException("Client did not send the initialized notification.");
+            }
+        }
+
+        [JsonRpcMethod("model/list", UseSingleObjectParameterDeserialization = true)]
+        public JsonElement ModelList(JsonElement parameters)
+        {
+            var cursor = parameters.TryGetProperty("cursor", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString()
+                : null;
+            server.ModelListCursors.Add(cursor);
+            var index = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
+            if (index < server.ModelPages.Count)
+            {
+                return server.ModelPages[index];
+            }
+
+            return JsonSerializer.SerializeToElement(new { data = Array.Empty<object>() });
+        }
+
+        [JsonRpcMethod("turn/start", UseSingleObjectParameterDeserialization = true)]
+        public async Task<object> TurnStart(JsonElement parameters)
+        {
+            server.LastTurnEffort = parameters.TryGetProperty("effort", out var effort)
+                && effort.ValueKind == JsonValueKind.String ? effort.GetString() : null;
+            server.LastTurnCollaborationMode = parameters.TryGetProperty("collaborationMode", out var collaboration)
+                && collaboration.ValueKind == JsonValueKind.Object
+                && collaboration.TryGetProperty("mode", out var mode)
+                ? mode.GetString()
+                : null;
             if (server.OnTurn is { } script)
             {
                 await script(server._rpc).ConfigureAwait(false);

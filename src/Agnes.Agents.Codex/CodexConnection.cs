@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Agnes.Abstractions;
 using Agnes.Agents.Codex.Wire;
 using Microsoft.Extensions.Logging;
 using StreamJsonRpc;
@@ -39,32 +40,107 @@ internal sealed class CodexConnection : ICodexRpc, IAsyncDisposable
     {
         await _rpc.InvokeWithParameterObjectAsync<CodexInitializeResult>(
             "initialize",
-            new CodexInitializeParams(new CodexClientInfo("Agnes", ClientVersion)),
+            new CodexInitializeParams(
+                new CodexClientInfo("Agnes", "Agnes", ClientVersion),
+                new CodexInitializeCapabilities()),
             cancellationToken).ConfigureAwait(false);
+        await _rpc.NotifyAsync("initialized", Array.Empty<object>()).ConfigureAwait(false);
         _logger.LogInformation("Codex app-server initialized");
     }
 
     public async Task<CodexAgentSession> StartThreadAsync(
-        string workingDirectory, string approvalPolicy, string sandbox, string? model, CancellationToken cancellationToken)
+        string workingDirectory, string approvalPolicy, string sandbox, string? model,
+        CancellationToken cancellationToken, ReasoningEffortCapability? reasoningEffort = null)
     {
         var result = await _rpc.InvokeWithParameterObjectAsync<CodexThreadStartResult>(
             "thread/start",
             new CodexThreadStartParams { Cwd = workingDirectory, ApprovalPolicy = approvalPolicy, Sandbox = sandbox, Model = string.IsNullOrWhiteSpace(model) ? null : model },
             cancellationToken).ConfigureAwait(false);
 
-        _session = new CodexAgentSession(result.Thread.Id, this, _logger);
+        var capabilities = await DiscoverCapabilitiesAsync(result.Thread.Id, cancellationToken).ConfigureAwait(false);
+        _session = new CodexAgentSession(
+            result.Thread.Id, this, _logger, reasoningEffort, capabilities, result.Model ?? model);
         return _session;
+    }
+
+    private async Task<CodexDiscoveredCapabilities> DiscoverCapabilitiesAsync(
+        string threadId, CancellationToken cancellationToken)
+    {
+        CodexGoal? goal = null;
+        var goalsSupported = false;
+        try
+        {
+            var result = await _rpc.InvokeWithParameterObjectAsync<CodexGoalGetResult>(
+                "thread/goal/get", new CodexGoalGetParams(threadId), cancellationToken).ConfigureAwait(false);
+            goalsSupported = true;
+            goal = result.Goal;
+        }
+        catch (RemoteInvocationException ex)
+        {
+            _logger.LogDebug(ex, "Codex app-server does not expose thread goals");
+        }
+
+        IReadOnlyList<CodexCollaborationModeMask> modes = [];
+        try
+        {
+            var result = await _rpc.InvokeWithParameterObjectAsync<CodexCollaborationModeListResult>(
+                "collaborationMode/list", new CodexCollaborationModeListParams(), cancellationToken).ConfigureAwait(false);
+            modes = result.Data;
+        }
+        catch (RemoteInvocationException ex)
+        {
+            _logger.LogDebug(ex, "Codex app-server does not expose collaboration-mode discovery");
+        }
+
+        return new CodexDiscoveredCapabilities(goalsSupported, goal, modes);
+    }
+
+    public async Task<IReadOnlyList<CodexModel>> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        var models = new List<CodexModel>();
+        string? cursor = null;
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        do
+        {
+            var result = await _rpc.InvokeWithParameterObjectAsync<CodexModelListResult>(
+                "model/list", new CodexModelListParams(cursor), cancellationToken).ConfigureAwait(false);
+            models.AddRange(result.Data.Where(m => !m.Hidden));
+            cursor = result.NextCursor;
+            if (cursor is not null && !seenCursors.Add(cursor))
+            {
+                throw new InvalidOperationException("Codex model/list returned a repeated pagination cursor.");
+            }
+        }
+        while (cursor is not null);
+
+        return models;
     }
 
     // ---- ICodexRpc: outbound calls from the session ----
 
-    public async Task<string> StartTurnAsync(string threadId, IReadOnlyList<CodexUserInput> input, CancellationToken cancellationToken)
+    public async Task<string> StartTurnAsync(
+        string threadId, IReadOnlyList<CodexUserInput> input, string? effort,
+        CodexCollaborationMode? collaborationMode, CancellationToken cancellationToken)
     {
         var result = await _rpc.InvokeWithParameterObjectAsync<CodexTurnStartResult>(
             "turn/start",
-            new CodexTurnStartParams(threadId, input),
+            new CodexTurnStartParams(threadId, input, effort, collaborationMode),
             cancellationToken).ConfigureAwait(false);
         return result.Turn.Id;
+    }
+
+    public async Task<CodexGoal> SetGoalAsync(string threadId, string objective, CancellationToken cancellationToken)
+    {
+        var result = await _rpc.InvokeWithParameterObjectAsync<CodexGoalSetResult>(
+            "thread/goal/set", new CodexGoalSetParams(threadId, objective), cancellationToken).ConfigureAwait(false);
+        return result.Goal;
+    }
+
+    public async Task<bool> ClearGoalAsync(string threadId, CancellationToken cancellationToken)
+    {
+        var result = await _rpc.InvokeWithParameterObjectAsync<CodexGoalClearResult>(
+            "thread/goal/clear", new CodexGoalClearParams(threadId), cancellationToken).ConfigureAwait(false);
+        return result.Cleared;
     }
 
     public async Task InterruptAsync(string threadId)
@@ -154,6 +230,12 @@ internal sealed class CodexConnection : ICodexRpc, IAsyncDisposable
 
         [JsonRpcMethod("thread/tokenUsage/updated", UseSingleObjectParameterDeserialization = true)]
         public void TokenUsage(JsonElement p) => connection.RouteNotification((s, e) => s.HandleTokenUsage(e), p, "thread/tokenUsage/updated");
+
+        [JsonRpcMethod("thread/goal/updated", UseSingleObjectParameterDeserialization = true)]
+        public void GoalUpdated(JsonElement p) => connection.RouteNotification((s, e) => s.HandleGoalUpdated(e), p, "thread/goal/updated");
+
+        [JsonRpcMethod("thread/goal/cleared", UseSingleObjectParameterDeserialization = true)]
+        public void GoalCleared(JsonElement p) => connection.RouteNotification((s, e) => s.HandleGoalCleared(e), p, "thread/goal/cleared");
 
         [JsonRpcMethod("turn/completed", UseSingleObjectParameterDeserialization = true)]
         public void TurnCompleted(JsonElement p) => connection.RouteNotification((s, e) => s.HandleTurnCompleted(e), p, "turn/completed");

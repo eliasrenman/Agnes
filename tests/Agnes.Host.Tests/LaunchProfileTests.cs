@@ -10,7 +10,8 @@ public class LaunchProfileTests
 
     private static LaunchProfile Sample(string id = "", string name = "Scratch OpenCode")
         => new(id, name, "opencode", WorkingDirectory: null, UseWorktree: true, SkipPermissions: true,
-            McpApproval: "Trust", GitCredentialMode: "Ask", UseSandbox: false, ModelId: "gpt-5");
+            McpApproval: "Trust", GitCredentialMode: "Ask", UseSandbox: false, ModelId: "gpt-5",
+            ReasoningEffortId: "high");
 
     // ---- store ----
 
@@ -55,6 +56,7 @@ public class LaunchProfileTests
             Assert.Equal("Ask", back.GitCredentialMode);
             Assert.False(back.UseSandbox);
             Assert.Equal("gpt-5", back.ModelId);
+            Assert.Equal("high", back.ReasoningEffortId);
 
             var pinnedBack = reloaded.Find(pinned.Id);
             Assert.Equal(Path.Combine(Path.GetTempPath(), "repo"), pinnedBack!.WorkingDirectory);
@@ -134,6 +136,7 @@ public class LaunchProfileTests
             var loaded = store.Find("legacy1");
             Assert.NotNull(loaded);
             Assert.Null(loaded!.ConnectedServiceProfileId);
+            Assert.Null(loaded.ReasoningEffortId);
             Assert.True(loaded.SkipPermissions);
         }
         finally
@@ -180,6 +183,7 @@ public class LaunchProfileTests
         Assert.Equal("Trust", open.GitCredentialMode);
         Assert.True(open.UseSandbox);
         Assert.Equal("opus", open.ModelId);
+        Assert.Null(open.ReasoningEffortId);
     }
 
     [Fact]
@@ -194,6 +198,7 @@ public class LaunchProfileTests
         // The rest of the captured options are unchanged.
         Assert.Equal("opencode", open.AdapterId);
         Assert.True(open.SkipPermissions);
+        Assert.Equal("high", open.ReasoningEffortId);
     }
 
     [Fact]

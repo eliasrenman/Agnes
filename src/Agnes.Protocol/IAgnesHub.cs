@@ -166,6 +166,12 @@ public interface IAgnesServer
     /// relaunches the agent (resuming its conversation) on the new model; null selects the CLI default.</summary>
     Task SwitchModel(string sessionId, string? modelId);
 
+    /// <summary>Changes the provider-specific reasoning effort used by subsequent turns.</summary>
+    Task SetReasoningEffort(string sessionId, string effortId);
+
+    /// <summary>Executes a provider-native command advertised in the session's live metadata.</summary>
+    Task ExecuteAgentCommand(string sessionId, string commandId, string? argument);
+
     Task RespondPermission(PermissionResponseRequest response);
 
     /// <summary>Registers the calling device's push token against a notification channel and sets its toggles,

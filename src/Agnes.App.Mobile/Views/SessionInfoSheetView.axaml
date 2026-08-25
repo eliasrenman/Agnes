@@ -43,6 +43,36 @@
         <TextBlock Classes="caption" Text="{Binding Session.CurrentModeName, StringFormat='Currently: {0}'}" />
       </StackPanel>
 
+      <!-- ===== reasoning effort ===== -->
+      <StackPanel Spacing="8" IsVisible="{Binding Session.HasReasoningEffortSelector}">
+        <TextBlock Classes="section" Text="REASONING EFFORT" Margin="0" />
+        <ComboBox ItemsSource="{Binding Session.AvailableReasoningEfforts}"
+                  SelectedItem="{Binding Session.SelectedReasoningEffort, Mode=TwoWay}"
+                  IsEnabled="{Binding Session.CanChangeReasoningEffort}"
+                  Background="{DynamicResource Surface2}"
+                  AutomationProperties.Name="Change reasoning effort">
+          <ComboBox.ItemTemplate>
+            <DataTemplate>
+              <StackPanel>
+                <TextBlock Text="{Binding DisplayName}" />
+                <TextBlock Text="{Binding Description}" Classes="caption" />
+              </StackPanel>
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+        <TextBlock Classes="caption" Text="Available between turns; applies to the next turn." />
+        <TextBlock Classes="caption" Text="{Binding Session.ReasoningEffortError}"
+                   IsVisible="{Binding Session.HasReasoningEffortError}" />
+      </StackPanel>
+
+      <!-- ===== provider-native goal ===== -->
+      <StackPanel Spacing="6" IsVisible="{Binding Session.HasProviderGoal}">
+        <TextBlock Classes="section" Text="CODEX GOAL" Margin="0" />
+        <Border Classes="inset">
+          <TextBlock Text="{Binding Session.ProviderGoalSummary}" TextWrapping="Wrap" />
+        </Border>
+      </StackPanel>
+
       <!-- ===== what a send does mid-turn ===== -->
       <TextBlock Classes="section" Text="WHILE A TURN IS RUNNING" Margin="0" />
       <Border Background="{DynamicResource Surface2}" CornerRadius="{StaticResource RadiusSm}" Padding="3">

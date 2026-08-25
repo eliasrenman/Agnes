@@ -41,11 +41,13 @@ public sealed class PostgresEventStore : IEventStore, IDisposable
             sandboxed         BOOLEAN NOT NULL DEFAULT FALSE,
             created_at        TEXT    NOT NULL,
             model_id          TEXT,
+            reasoning_effort_id TEXT,
             owner             TEXT,
             group_id          TEXT
         );
         -- Additive migrations for catalogues created before these columns existed.
         ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_id TEXT;
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort_id TEXT;
         ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner    TEXT;
         ALTER TABLE sessions ADD COLUMN IF NOT EXISTS group_id TEXT;
         """;
@@ -61,11 +63,12 @@ public sealed class PostgresEventStore : IEventStore, IDisposable
 
     internal const string UpsertSessionSql =
         """
-        INSERT INTO sessions (session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id)
-        VALUES (@sid, @adapter, @wd, @agent, @wt, @skip, @sandboxed, @created, @model, @owner, @group)
+        INSERT INTO sessions (session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, reasoning_effort_id, owner, group_id)
+        VALUES (@sid, @adapter, @wd, @agent, @wt, @skip, @sandboxed, @created, @model, @effort, @owner, @group)
         ON CONFLICT (session_id) DO UPDATE SET
             agent_session_id = EXCLUDED.agent_session_id,
             model_id = EXCLUDED.model_id,
+            reasoning_effort_id = EXCLUDED.reasoning_effort_id,
             owner = EXCLUDED.owner,
             group_id = EXCLUDED.group_id;
         """;
@@ -74,7 +77,7 @@ public sealed class PostgresEventStore : IEventStore, IDisposable
         "DELETE FROM events WHERE ts < @cutoff;";
 
     internal const string ListSessionsSql =
-        "SELECT session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id FROM sessions ORDER BY created_at ASC;";
+        "SELECT session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id, reasoning_effort_id FROM sessions ORDER BY created_at ASC;";
 
     private readonly string _connectionString;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
@@ -151,6 +154,7 @@ public sealed class PostgresEventStore : IEventStore, IDisposable
         command.Parameters.AddWithValue("sandboxed", record.Sandboxed);
         command.Parameters.AddWithValue("created", record.CreatedAt.ToString("O"));
         command.Parameters.AddWithValue("model", (object?)record.ModelId ?? DBNull.Value);
+        command.Parameters.AddWithValue("effort", (object?)record.ReasoningEffortId ?? DBNull.Value);
         command.Parameters.AddWithValue("owner", (object?)record.Owner ?? DBNull.Value);
         command.Parameters.AddWithValue("group", (object?)record.Group ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -181,7 +185,8 @@ public sealed class PostgresEventStore : IEventStore, IDisposable
                 DateTimeOffset.Parse(reader.GetString(7)),
                 reader.IsDBNull(8) ? null : reader.GetString(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9),
-                reader.IsDBNull(10) ? null : reader.GetString(10)));
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11)));
         }
 
         return records;

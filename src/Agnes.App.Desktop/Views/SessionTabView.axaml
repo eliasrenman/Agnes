@@ -957,6 +957,26 @@
                                  FontFamily="{StaticResource MonoFont}" AutomationProperties.Name="Custom model id" />
                     </StackPanel>
 
+                    <StackPanel Spacing="6" IsVisible="{Binding HasReasoningEfforts}">
+                        <TextBlock Text="REASONING EFFORT" Foreground="{DynamicResource FgDim}" FontSize="11" FontWeight="SemiBold" />
+                        <ComboBox ItemsSource="{Binding AvailableReasoningEfforts}"
+                                  SelectedItem="{Binding SelectedReasoningEffort, Mode=TwoWay}"
+                                  Background="{DynamicResource PanelAlt}" Foreground="{DynamicResource Fg}"
+                                  BorderBrush="{DynamicResource Line}" Padding="9,5"
+                                  AutomationProperties.Name="Launch reasoning effort">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding DisplayName}" />
+                                        <TextBlock Text="{Binding Description}" Foreground="{DynamicResource FgFaint}" FontSize="10" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </StackPanel>
+                    <TextBlock Text="{Binding ReasoningEffortValidationError}" Foreground="{DynamicResource FgDim}"
+                               FontSize="11" TextWrapping="Wrap" IsVisible="{Binding HasReasoningEffortValidationError}" />
+
                     <!-- Explicit start: no surprise auto-progress when an agent is clicked -->
                     <Button Classes="primary" Content="Start session" Command="{Binding StartSessionCommand}" HorizontalAlignment="Stretch"
                             HorizontalContentAlignment="Center" Padding="12,9" FontSize="13"
@@ -2064,8 +2084,8 @@
                                                         HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0"
                                                         Padding="8,5" CornerRadius="6" Cursor="Hand">
                                                     <StackPanel Orientation="Horizontal" Spacing="10">
-                                                        <TextBlock Text="{Binding Name, StringFormat='/{0}'}" Foreground="{DynamicResource Accent}"
-                                                                   FontFamily="{StaticResource MonoFont}" FontSize="12" Width="90" />
+                                                        <TextBlock Text="{Binding DisplayToken}" Foreground="{DynamicResource Accent}"
+                                                                   FontFamily="{StaticResource MonoFont}" FontSize="12" MinWidth="90" />
                                                         <TextBlock Text="{Binding Description}" FontSize="12"
                                                                    Foreground="{DynamicResource FgDim}" IsVisible="{Binding !IsBroken}" />
                                                         <TextBlock Text="{Binding Description}" FontSize="12"
@@ -2153,6 +2173,37 @@
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>
                                     </StackPanel>
+
+                                    <!-- Provider-reported reasoning effort. Configuration uses neutral roles;
+                                         disabled during a turn so changes have next-turn semantics. -->
+                                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                                                Margin="4,0,0,6" IsVisible="{Binding HasReasoningEffortSelector}">
+                                        <TextBlock Text="Effort" Foreground="{DynamicResource FgFaint}" FontSize="11" VerticalAlignment="Center" />
+                                        <ComboBox ItemsSource="{Binding AvailableReasoningEfforts}"
+                                                  SelectedItem="{Binding SelectedReasoningEffort, Mode=TwoWay}"
+                                                  IsEnabled="{Binding CanChangeReasoningEffort}"
+                                                  FontSize="12" MinHeight="30" Padding="8,2"
+                                                  AutomationProperties.Name="Change reasoning effort">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="12" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <TextBlock Text="{Binding ReasoningEffortError}" Foreground="{DynamicResource FgDim}"
+                                                   FontSize="11" IsVisible="{Binding HasReasoningEffortError}" MaxWidth="220"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+
+                                    <Border IsVisible="{Binding HasProviderGoal}" Background="{DynamicResource PanelAlt}"
+                                            BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="7"
+                                            Padding="9,4" Margin="4,0,0,6" VerticalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Codex goal" Foreground="{DynamicResource FgFaint}" FontSize="11" />
+                                            <TextBlock Text="{Binding ProviderGoalSummary}" Foreground="{DynamicResource Fg}"
+                                                       FontSize="11" MaxWidth="320" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
 
                                     <!-- Send policy: what "send" does while a turn is active (sessions/03). -->
                                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="4,0,0,6">

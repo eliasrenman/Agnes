@@ -42,7 +42,7 @@ public sealed partial class SessionDocument : Document, ITraySession
         SetGitCredentialModeCommand = new RelayCommand<string>(v => { if (v is not null) { GitCredentialMode = v; } });
         SetPermissionModeCommand = new RelayCommand<string>(v => { if (!PermissionPromptsRequired) { SkipPermissions = v == "Autonomous"; } });
         SetSandboxModeCommand = new RelayCommand<string>(v => { if (v is not null && SandboxAvailable && !SandboxRequired) { UseSandbox = v == "On"; } });
-        SelectAgentChoiceCommand = new RelayCommand<AgentChoice>(SelectAgentChoice);
+        SelectAgentChoiceCommand = new RelayCommand<AgentChoice>(choice => SelectAgentChoice(choice));
         SelectModelChoiceCommand = new RelayCommand<ModelChoice>(SelectModelChoice);
         StartSessionCommand = new AsyncRelayCommand(StartSessionAsync, () => SelectedAgent is { Available: true });
         ApplyProfileCommand = new RelayCommand(() => { if (SelectedProfile is { } p) { ApplyLaunchProfile(p); } });
@@ -127,6 +127,8 @@ public sealed partial class SessionDocument : Document, ITraySession
     [NotifyPropertyChangedFor(nameof(HasModels))]
     private ObservableCollection<ModelChoice>? _models;
 
+    private string? _pendingProfileReasoningEffortId;
+
     /// <summary>The chosen catalog model; the free-text <see cref="CustomModelId"/> overrides it when set.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CustomEntryAllowed))]
@@ -138,6 +140,35 @@ public sealed partial class SessionDocument : Document, ITraySession
     private string _customModelId = string.Empty;
 
     public bool HasModels => Models is { Count: > 0 };
+
+    public IReadOnlyList<Agnes.Abstractions.ReasoningEffortInfo> AvailableReasoningEfforts
+        => SelectedModel?.SupportedReasoningEfforts ?? [];
+
+    public bool HasReasoningEfforts => AvailableReasoningEfforts.Count > 0;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EffectiveReasoningEffortId))]
+    private Agnes.Abstractions.ReasoningEffortInfo? _selectedReasoningEffort;
+
+    partial void OnSelectedReasoningEffortChanged(Agnes.Abstractions.ReasoningEffortInfo? value)
+    {
+        if (value is not null)
+        {
+            _pendingProfileReasoningEffortId = null;
+            ReasoningEffortValidationError = string.Empty;
+        }
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasReasoningEffortValidationError))]
+    private string _reasoningEffortValidationError = string.Empty;
+
+    public bool HasReasoningEffortValidationError => ReasoningEffortValidationError.Length > 0;
+
+    public string? EffectiveReasoningEffortId
+        => HasReasoningEffortValidationError
+            ? _pendingProfileReasoningEffortId
+            : SelectedReasoningEffort?.Id;
 
     /// <summary>Whether a free-text custom id is accepted right now (defaults allowed when nothing is selected).</summary>
     public bool CustomEntryAllowed => SelectedModel?.IsCustomEntryAllowed ?? true;
@@ -176,6 +207,7 @@ public sealed partial class SessionDocument : Document, ITraySession
         }
 
         SelectedModel = choice;
+        ReconcileReasoningEffort(SelectedReasoningEffort?.Id, flagInvalid: false);
     }
 
     /// <summary>Replaces the model picker's contents (called by the controller once the catalog is resolved),
@@ -183,10 +215,32 @@ public sealed partial class SessionDocument : Document, ITraySession
     public void SetModels(IEnumerable<ModelChoice> models)
     {
         Models = new ObservableCollection<ModelChoice>(models);
-        CustomModelId = string.Empty;
         SelectedModel = null;
-        SelectModelChoice(Models.FirstOrDefault(m => m.IsAvailable));
+        var requestedModel = CustomModelId?.Trim();
+        SelectModelChoice(Models.FirstOrDefault(m => m.IsAvailable && m.Id == requestedModel)
+            ?? Models.FirstOrDefault(m => m.IsAvailable));
+        ReconcileReasoningEffort(_pendingProfileReasoningEffortId, flagInvalid: _pendingProfileReasoningEffortId is not null);
         OnPropertyChanged(nameof(HasModels));
+    }
+
+    private void ReconcileReasoningEffort(string? preferredId, bool flagInvalid)
+    {
+        var supported = AvailableReasoningEfforts;
+        var selected = preferredId is null ? null : supported.FirstOrDefault(e => e.Id == preferredId);
+        selected ??= supported.FirstOrDefault(e => e.Id == SelectedModel?.DefaultReasoningEffortId);
+        SelectedReasoningEffort = selected;
+
+        if (flagInvalid && preferredId is not null && supported.All(e => e.Id != preferredId))
+        {
+            _pendingProfileReasoningEffortId = preferredId;
+            ReasoningEffortValidationError = supported.Count == 0
+                ? $"Saved effort '{preferredId}' is not supported by this model."
+                : $"Saved effort '{preferredId}' is stale. Current values: {string.Join(", ", supported.Select(e => e.Id))}.";
+        }
+
+        OnPropertyChanged(nameof(AvailableReasoningEfforts));
+        OnPropertyChanged(nameof(HasReasoningEfforts));
+        OnPropertyChanged(nameof(EffectiveReasoningEffortId));
     }
 
     // ---- provider login terminal (platform/03): a live, interactive terminal for a CLI's login flow ----
@@ -278,16 +332,17 @@ public sealed partial class SessionDocument : Document, ITraySession
         UseSandbox = profile.UseSandbox && SandboxAvailable;
         _controller.ApplyLaunchProfileMcpApproval(profile.McpApproval);
 
+        // Stash model + effort before loading the agent's catalogue so even a synchronously-completing test
+        // host cannot race profile restoration.
+        CustomModelId = profile.ModelId ?? string.Empty;
+        _pendingProfileReasoningEffortId = profile.ReasoningEffortId;
+
         // Select the agent the profile targets, if it's present and available; this also (re)loads its models.
         var agent = _allAgents.FirstOrDefault(a => a.AdapterId == profile.AdapterId && a.Available);
         if (agent is not null)
         {
-            SelectAgentChoice(agent);
+            SelectAgentChoice(agent, preserveLaunchSelections: true);
         }
-
-        // The model catalog loads asynchronously; stash the profile's model as free-text so it's applied
-        // regardless of whether the catalog lists it.
-        CustomModelId = profile.ModelId ?? string.Empty;
 
         StatusText = $"Applied profile \"{profile.Name}\" — adjust anything, then Start.";
     }
@@ -616,7 +671,7 @@ public sealed partial class SessionDocument : Document, ITraySession
 
     // ---- agent picking: select (highlight) then Start (open) ----
 
-    private void SelectAgentChoice(AgentChoice? choice)
+    private void SelectAgentChoice(AgentChoice? choice, bool preserveLaunchSelections = false)
     {
         if (choice is null || !choice.Available)
         {
@@ -631,6 +686,13 @@ public sealed partial class SessionDocument : Document, ITraySession
         SelectedAgent = choice;
         // The model catalog is per-agent; reset it and (re)load for the newly chosen agent.
         Models = null;
+        if (!preserveLaunchSelections)
+        {
+            CustomModelId = string.Empty;
+            SelectedReasoningEffort = null;
+            _pendingProfileReasoningEffortId = null;
+            ReasoningEffortValidationError = string.Empty;
+        }
         _ = _controller.LoadModelsAsync(this, choice.AdapterId);
     }
 
@@ -649,7 +711,8 @@ public sealed partial class SessionDocument : Document, ITraySession
             return Task.CompletedTask;
         }
 
-        return _controller.SelectAgentAsync(this, a.AdapterId, a.DisplayName, SkipPermissions, GitCredentialMode, SandboxAvailable && UseSandbox, EffectiveModelId);
+        return _controller.SelectAgentAsync(this, a.AdapterId, a.DisplayName, SkipPermissions, GitCredentialMode,
+            SandboxAvailable && UseSandbox, EffectiveModelId, EffectiveReasoningEffortId);
     }
 
     private async Task SaveProfileAsync()

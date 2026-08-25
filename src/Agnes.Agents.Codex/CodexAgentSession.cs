@@ -10,9 +10,18 @@ namespace Agnes.Agents.Codex;
 /// <summary>Outbound calls a session makes to the Codex app-server (via the connection).</summary>
 internal interface ICodexRpc
 {
-    Task<string> StartTurnAsync(string threadId, IReadOnlyList<CodexUserInput> input, CancellationToken cancellationToken);
+    Task<string> StartTurnAsync(
+        string threadId, IReadOnlyList<CodexUserInput> input, string? effort,
+        CodexCollaborationMode? collaborationMode, CancellationToken cancellationToken);
+    Task<CodexGoal> SetGoalAsync(string threadId, string objective, CancellationToken cancellationToken);
+    Task<bool> ClearGoalAsync(string threadId, CancellationToken cancellationToken);
     Task InterruptAsync(string threadId);
 }
+
+internal sealed record CodexDiscoveredCapabilities(
+    bool GoalsSupported,
+    CodexGoal? Goal,
+    IReadOnlyList<CodexCollaborationModeMask> CollaborationModes);
 
 /// <summary>
 /// An <see cref="IAgentSession"/> backed by one Codex thread on a connected <c>codex app-server</c>.
@@ -28,18 +37,60 @@ internal sealed class CodexAgentSession : IAgentSession
         Channel.CreateUnbounded<SessionEvent>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pendingApprovals = new();
     private readonly ConcurrentDictionary<string, PendingQuestion> _pendingQuestions = new();
+    private readonly IReadOnlyDictionary<string, CodexCollaborationModeMask> _collaborationModes;
+    private readonly string _model;
+    private CodexCollaborationMode? _collaborationMode;
     private TaskCompletionSource<StopReason>? _activeTurn;
 
-    public CodexAgentSession(string threadId, ICodexRpc rpc, ILogger logger)
+    internal const string GoalCommandId = "codex.thread.goal.set";
+    internal const string ClearGoalCommandId = "codex.thread.goal.clear";
+
+    public CodexAgentSession(
+        string threadId, ICodexRpc rpc, ILogger logger, ReasoningEffortCapability? reasoningEffort = null,
+        CodexDiscoveredCapabilities? discovered = null, string? model = null)
     {
         AgentSessionId = threadId;
         _rpc = rpc;
         _logger = logger;
+        ReasoningEffort = reasoningEffort;
+        _model = model ?? string.Empty;
+        ProviderGoal = ToProviderGoal(discovered?.Goal);
+        _collaborationModes = (discovered?.CollaborationModes ?? [])
+            .Where(m => !string.IsNullOrWhiteSpace(m.Mode) && !string.IsNullOrWhiteSpace(m.Name))
+            .GroupBy(m => ModeCommandId(m.Mode!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        var commands = new List<AgentCommandInfo>();
+        if (discovered?.GoalsSupported == true)
+        {
+            commands.Add(new AgentCommandInfo(
+                GoalCommandId, "goal", "Set the persistent Codex thread goal", "objective",
+                AcceptsArguments: true));
+            commands.Add(new AgentCommandInfo(
+                ClearGoalCommandId, "goal-clear", "Clear the persistent Codex thread goal"));
+        }
+
+        commands.AddRange(_collaborationModes.Select(pair => new AgentCommandInfo(
+            pair.Key, SlashName(pair.Value.Name), $"Switch to {pair.Value.Name} mode")));
+        Commands = commands;
+        Modes = _collaborationModes.Values
+            .Select(m => new SessionMode(m.Mode!, m.Name))
+            .ToArray();
     }
 
     public string AgentSessionId { get; }
 
     public ChannelReader<SessionEvent> Events => _events.Reader;
+
+    public ReasoningEffortCapability? ReasoningEffort { get; private set; }
+
+    public IReadOnlyList<AgentCommandInfo> Commands { get; }
+
+    public ProviderGoalInfo? ProviderGoal { get; private set; }
+
+    public IReadOnlyList<SessionMode> Modes { get; }
+
+    public string? CurrentModeId { get; private set; }
 
     public async Task<StopReason> PromptAsync(IReadOnlyList<ContentBlock> content, CancellationToken cancellationToken = default)
     {
@@ -47,7 +98,9 @@ internal sealed class CodexAgentSession : IAgentSession
         _activeTurn = tcs;
         try
         {
-            await _rpc.StartTurnAsync(AgentSessionId, CodexMap.ToInput(content), cancellationToken).ConfigureAwait(false);
+            await _rpc.StartTurnAsync(
+                AgentSessionId, CodexMap.ToInput(content), ReasoningEffort?.CurrentEffortId,
+                _collaborationMode, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -62,6 +115,78 @@ internal sealed class CodexAgentSession : IAgentSession
     }
 
     public Task CancelAsync(CancellationToken cancellationToken = default) => _rpc.InterruptAsync(AgentSessionId);
+
+    public Task SetReasoningEffortAsync(string effortId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var capability = ReasoningEffort
+            ?? throw new NotSupportedException("This Codex session has no reasoning-effort capability.");
+        if (_activeTurn is not null && !_activeTurn.Task.IsCompleted)
+        {
+            throw new InvalidOperationException("Reasoning effort cannot be changed while a turn is active.");
+        }
+
+        if (!capability.SupportedValues.Any(v => string.Equals(v.Id, effortId, StringComparison.Ordinal)))
+        {
+            throw new ArgumentException(UnsupportedEffortMessage(effortId, capability.SupportedValues), nameof(effortId));
+        }
+
+        ReasoningEffort = capability with { CurrentEffortId = effortId };
+        return Task.CompletedTask;
+    }
+
+    public Task SetModeAsync(string modeId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var entry = _collaborationModes.Values.FirstOrDefault(
+            m => string.Equals(m.Mode, modeId, StringComparison.Ordinal))
+            ?? throw new ArgumentException($"Codex did not advertise collaboration mode '{modeId}'.", nameof(modeId));
+        var effectiveModel = entry.Model ?? _model;
+        _collaborationMode = new CodexCollaborationMode(
+            entry.Mode!,
+            new CodexCollaborationSettings(
+                effectiveModel, entry.ReasoningEffort ?? ReasoningEffort?.CurrentEffortId));
+        CurrentModeId = entry.Mode;
+        Emit(new ModeChangedEvent(entry.Mode!));
+        return Task.CompletedTask;
+    }
+
+    public async Task ExecuteCommandAsync(
+        string commandId, string? argument, CancellationToken cancellationToken = default)
+    {
+        if (string.Equals(commandId, GoalCommandId, StringComparison.Ordinal))
+        {
+            var objective = argument?.Trim();
+            if (string.IsNullOrWhiteSpace(objective))
+            {
+                throw new ArgumentException("/goal requires an objective.", nameof(argument));
+            }
+
+            var goal = await _rpc.SetGoalAsync(AgentSessionId, objective, cancellationToken).ConfigureAwait(false);
+            UpdateProviderGoal(ToProviderGoal(goal));
+            return;
+        }
+
+        if (string.Equals(commandId, ClearGoalCommandId, StringComparison.Ordinal))
+        {
+            if (await _rpc.ClearGoalAsync(AgentSessionId, cancellationToken).ConfigureAwait(false))
+            {
+                UpdateProviderGoal(null);
+            }
+            return;
+        }
+
+        if (_collaborationModes.TryGetValue(commandId, out var mode))
+        {
+            await SetModeAsync(mode.Mode!, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        throw new NotSupportedException($"Codex command '{commandId}' was not discovered for this session.");
+    }
+
+    internal static string UnsupportedEffortMessage(string effortId, IReadOnlyList<ReasoningEffortInfo> supported)
+        => $"Reasoning effort '{effortId}' is not supported. Valid values: {string.Join(", ", supported.Select(v => v.Id))}.";
 
     public Task RespondToPermissionAsync(string requestId, string optionId, CancellationToken cancellationToken = default)
     {
@@ -231,6 +356,17 @@ internal sealed class CodexAgentSession : IAgentSession
         }
     }
 
+    public void HandleGoalUpdated(JsonElement notification)
+    {
+        if (notification.TryGetProperty("goal", out var value)
+            && value.Deserialize<CodexGoal>(CodexJson.Read) is { } goal)
+        {
+            UpdateProviderGoal(ToProviderGoal(goal));
+        }
+    }
+
+    public void HandleGoalCleared(JsonElement notification) => UpdateProviderGoal(null);
+
     public void HandleError(JsonElement notification)
     {
         var message = notification.TryGetProperty("error", out var err) && err.TryGetProperty("message", out var m)
@@ -249,6 +385,7 @@ internal sealed class CodexAgentSession : IAgentSession
         var reason = CodexMap.ToStopReason(status);
         Emit(new TurnEndedEvent(reason));
         _activeTurn?.TrySetResult(reason);
+        _activeTurn = null;
     }
 
     public async Task<CodexApprovalResponse> HandleApprovalAsync(JsonElement parameters, CancellationToken cancellationToken)
@@ -311,6 +448,29 @@ internal sealed class CodexAgentSession : IAgentSession
            && element.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
             ? p.GetString()
             : null;
+
+    private static string ModeCommandId(string modeId) => $"codex.collaboration-mode.{modeId}";
+
+    private static string SlashName(string name)
+    {
+        var chars = name.Trim().ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        return new string(chars).Trim('-');
+    }
+
+    private static ProviderGoalInfo? ToProviderGoal(CodexGoal? goal)
+        => goal is null ? null : new ProviderGoalInfo(
+            goal.Objective, goal.Status, goal.TokenBudget, goal.TokensUsed, goal.TimeUsedSeconds);
+
+    private void UpdateProviderGoal(ProviderGoalInfo? goal)
+    {
+        if (Equals(ProviderGoal, goal))
+        {
+            return;
+        }
+
+        ProviderGoal = goal;
+        Emit(new ProviderGoalChangedEvent(goal));
+    }
 
     private void Emit(SessionEvent e)
     {

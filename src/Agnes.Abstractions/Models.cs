@@ -6,7 +6,21 @@ namespace Agnes.Abstractions;
 /// accepts a free-text id in place of a catalogued one (providers ship models faster than a static list
 /// can track), so an adapter can lock this down where a free-text id genuinely wouldn't make sense.
 /// </summary>
-public sealed record ModelInfo(string Id, string DisplayName, bool IsCustomEntryAllowed = true);
+public sealed record ReasoningEffortInfo(string Id, string DisplayName, string? Description = null);
+
+/// <summary>The reasoning-effort choices and effective state reported by a provider for one live session.</summary>
+public sealed record ReasoningEffortCapability(
+    IReadOnlyList<ReasoningEffortInfo> SupportedValues,
+    string? DefaultEffortId,
+    string? CurrentEffortId,
+    bool SupportsRuntimeChanges);
+
+public sealed record ModelInfo(
+    string Id,
+    string DisplayName,
+    bool IsCustomEntryAllowed = true,
+    IReadOnlyList<ReasoningEffortInfo>? SupportedReasoningEfforts = null,
+    string? DefaultReasoningEffortId = null);
 
 /// <summary>
 /// Optional capability an <see cref="IAgentAdapter"/> may implement (checked via <c>is IModelListingAdapter</c>)

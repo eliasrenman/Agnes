@@ -58,11 +58,13 @@ public class EventStoreTests
     public async Task Session_record_round_trips_the_model_id(IEventStore store)
     {
         var record = new SessionRecord("s1", "claude-code-native", "/work", "agent-1",
-            UseWorktree: false, SkipPermissions: false, Sandboxed: true, DateTimeOffset.UtcNow, ModelId: "opus");
+            UseWorktree: false, SkipPermissions: false, Sandboxed: true, DateTimeOffset.UtcNow,
+            ModelId: "opus", ReasoningEffortId: "high");
         await store.SaveSessionAsync(record);
 
         var loaded = Assert.Single(await store.ListSessionsAsync());
         Assert.Equal("opus", loaded.ModelId);
+        Assert.Equal("high", loaded.ReasoningEffortId);
 
         // A model switch re-saves the same session with a new model — the upsert must update it.
         await store.SaveSessionAsync(record with { ModelId = "sonnet" });
@@ -97,5 +99,6 @@ public class EventStoreTests
         var loaded = Assert.Single(await store.ListSessionsAsync());
         Assert.Equal("old", loaded.SessionId);
         Assert.Null(loaded.ModelId);
+        Assert.Null(loaded.ReasoningEffortId);
     }
 }

@@ -38,7 +38,7 @@ public interface ITabController
 
     /// <summary>Whether a host can be removed by the user (built-in Simulated/Recorded hosts can't).</summary>
     bool IsForgettableHost(string url);
-    Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null);
+    Task SelectAgentAsync(SessionDocument doc, string adapterId, string displayName, bool skipPermissions = false, string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null);
 
     /// <summary>Finds sessions a CLI created outside Agnes for the tab's working directory (from the CLI's own
     /// on-disk logs) and lists them on the tab for a read-only "Watch" (sessions/02).</summary>
@@ -161,6 +161,8 @@ public sealed partial class ModelChoice : ObservableObject
         DisplayName = option.DisplayName;
         IsCustomEntryAllowed = option.IsCustomEntryAllowed;
         IsAvailable = option.IsAvailable;
+        SupportedReasoningEfforts = option.SupportedReasoningEfforts ?? [];
+        DefaultReasoningEffortId = option.DefaultReasoningEffortId;
         _isFavorite = option.IsFavorite;
         ToggleFavoriteCommand = new RelayCommand(() => toggleFavorite?.Invoke(this), () => IsAvailable);
     }
@@ -168,6 +170,8 @@ public sealed partial class ModelChoice : ObservableObject
     public string Id { get; }
     public string DisplayName { get; }
     public bool IsCustomEntryAllowed { get; }
+    public IReadOnlyList<Agnes.Abstractions.ReasoningEffortInfo> SupportedReasoningEfforts { get; }
+    public string? DefaultReasoningEffortId { get; }
 
     /// <summary>Whether the model is in the current catalog. A favorited-but-removed model is shown as a
     /// visible "no longer available" row rather than silently offered as working.</summary>

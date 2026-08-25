@@ -6,12 +6,31 @@ namespace Agnes.Agents.Codex.Wire;
 // Only the fields Agnes actually sends or reads are modelled; the server tolerates the rest being
 // absent. Inbound notification payloads are modelled at the bottom of this file.
 
-internal sealed record CodexInitializeParams(CodexClientInfo ClientInfo);
+internal sealed record CodexInitializeParams(CodexClientInfo ClientInfo, CodexInitializeCapabilities Capabilities);
 
-internal sealed record CodexClientInfo(string Name, string Version);
+internal sealed record CodexClientInfo(string Name, string? Title, string Version);
+
+internal sealed record CodexInitializeCapabilities(bool ExperimentalApi = true, bool RequestAttestation = false);
 
 /// <summary>Result of <c>initialize</c> — we only need it to succeed, so nothing is read from it.</summary>
 internal sealed record CodexInitializeResult;
+
+internal sealed record CodexModelListParams(string? Cursor = null, int? Limit = null);
+
+internal sealed record CodexModelListResult(IReadOnlyList<CodexModel> Data, string? NextCursor = null);
+
+internal sealed record CodexModel
+{
+    public required string Id { get; init; }
+    public string? Model { get; init; }
+    public required string DisplayName { get; init; }
+    public bool Hidden { get; init; }
+    public bool IsDefault { get; init; }
+    public required IReadOnlyList<CodexReasoningEffortOption> SupportedReasoningEfforts { get; init; }
+    public string? DefaultReasoningEffort { get; init; }
+}
+
+internal sealed record CodexReasoningEffortOption(string ReasoningEffort, string Description);
 
 internal sealed record CodexThreadStartParams
 {
@@ -32,7 +51,48 @@ internal sealed record CodexThreadStartResult(CodexThread Thread, string? Model)
 
 internal sealed record CodexThread(string Id);
 
-internal sealed record CodexTurnStartParams(string ThreadId, IReadOnlyList<CodexUserInput> Input);
+internal sealed record CodexGoalGetParams(string ThreadId);
+
+internal sealed record CodexGoalGetResult(CodexGoal? Goal);
+
+internal sealed record CodexGoalSetParams(string ThreadId, string Objective);
+
+internal sealed record CodexGoalSetResult(CodexGoal Goal);
+
+internal sealed record CodexGoalClearParams(string ThreadId);
+
+internal sealed record CodexGoalClearResult(bool Cleared);
+
+internal sealed record CodexGoal(
+    string ThreadId,
+    string Objective,
+    string Status,
+    long? TokenBudget,
+    long TokensUsed,
+    long TimeUsedSeconds);
+
+internal sealed record CodexCollaborationModeListParams;
+
+internal sealed record CodexCollaborationModeListResult(IReadOnlyList<CodexCollaborationModeMask> Data);
+
+internal sealed record CodexCollaborationModeMask(
+    string Name,
+    string? Mode,
+    string? Model,
+    [property: System.Text.Json.Serialization.JsonPropertyName("reasoning_effort")] string? ReasoningEffort);
+
+internal sealed record CodexCollaborationMode(string Mode, CodexCollaborationSettings Settings);
+
+internal sealed record CodexCollaborationSettings(
+    string Model,
+    [property: System.Text.Json.Serialization.JsonPropertyName("reasoning_effort")] string? ReasoningEffort,
+    [property: System.Text.Json.Serialization.JsonPropertyName("developer_instructions")] string? DeveloperInstructions = null);
+
+internal sealed record CodexTurnStartParams(
+    string ThreadId,
+    IReadOnlyList<CodexUserInput> Input,
+    string? Effort = null,
+    CodexCollaborationMode? CollaborationMode = null);
 
 /// <summary>A single input item on a turn. Agnes sends text (and, later, images).</summary>
 internal sealed record CodexUserInput(string Type, string Text);

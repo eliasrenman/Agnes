@@ -30,5 +30,6 @@ public class CodexLiveSmokeTests
 
         // A real thread id came back from `thread/start` over the real wire.
         Assert.False(string.IsNullOrWhiteSpace(session.AgentSessionId));
+        Console.WriteLine("Live Codex commands: {0}", string.Join(", ", session.Commands.Select(c => $"/{c.Name}")));
     }
 }

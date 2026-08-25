@@ -89,6 +89,35 @@
           </ItemsControl.ItemTemplate>
         </ItemsControl>
 
+        <!-- ===== model + provider-reported reasoning effort ===== -->
+        <StackPanel Spacing="8" IsVisible="{Binding HasModels}">
+          <TextBlock Classes="section" Text="MODEL" />
+          <ComboBox ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                    Background="{DynamicResource Surface2}" AutomationProperties.Name="Launch model">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding DisplayName}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </StackPanel>
+
+        <StackPanel Spacing="8" IsVisible="{Binding HasReasoningEfforts}">
+          <TextBlock Classes="section" Text="REASONING EFFORT" />
+          <ComboBox ItemsSource="{Binding AvailableReasoningEfforts}"
+                    SelectedItem="{Binding SelectedReasoningEffort, Mode=TwoWay}"
+                    Background="{DynamicResource Surface2}" AutomationProperties.Name="Launch reasoning effort">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel>
+                  <TextBlock Text="{Binding DisplayName}" />
+                  <TextBlock Text="{Binding Description}" Classes="caption" />
+                </StackPanel>
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </StackPanel>
+
         <!-- ===== working folder ===== -->
         <TextBlock Classes="section" Text="FOLDER ON THE HOST" />
         <TextBox Theme="{StaticResource MobileTextBox}" Text="{Binding WorkingDirectory, Mode=TwoWay}"

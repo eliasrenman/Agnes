@@ -43,6 +43,7 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
                 sandboxed         INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL,
                 model_id          TEXT,
+                reasoning_effort_id TEXT,
                 owner             TEXT,
                 group_id          TEXT
             );
@@ -53,6 +54,7 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
         // EXISTS, so add each and swallow the "duplicate column name" error when it's already there — critical
         // so an existing catalogue (with real sessions) still loads instead of throwing on read.
         AddColumnIfMissing(connection, "sessions", "model_id TEXT");
+        AddColumnIfMissing(connection, "sessions", "reasoning_effort_id TEXT");
         AddColumnIfMissing(connection, "sessions", "owner TEXT");
         AddColumnIfMissing(connection, "sessions", "group_id TEXT");
     }
@@ -77,11 +79,12 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            INSERT INTO sessions (session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id)
-            VALUES ($sid, $adapter, $wd, $agent, $wt, $skip, $sandboxed, $created, $model, $owner, $group)
+            INSERT INTO sessions (session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, reasoning_effort_id, owner, group_id)
+            VALUES ($sid, $adapter, $wd, $agent, $wt, $skip, $sandboxed, $created, $model, $effort, $owner, $group)
             ON CONFLICT(session_id) DO UPDATE SET
                 agent_session_id = excluded.agent_session_id,
                 model_id = excluded.model_id,
+                reasoning_effort_id = excluded.reasoning_effort_id,
                 owner = excluded.owner,
                 group_id = excluded.group_id;
             """;
@@ -94,6 +97,7 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
         command.Parameters.AddWithValue("$sandboxed", record.Sandboxed ? 1 : 0);
         command.Parameters.AddWithValue("$created", record.CreatedAt.ToString("O"));
         command.Parameters.AddWithValue("$model", (object?)record.ModelId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$effort", (object?)record.ReasoningEffortId ?? DBNull.Value);
         command.Parameters.AddWithValue("$owner", (object?)record.Owner ?? DBNull.Value);
         command.Parameters.AddWithValue("$group", (object?)record.Group ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -115,7 +119,7 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
         await using var connection = Open();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id FROM sessions ORDER BY created_at ASC;";
+            "SELECT session_id, adapter_id, working_directory, agent_session_id, use_worktree, skip_permissions, sandboxed, created_at, model_id, owner, group_id, reasoning_effort_id FROM sessions ORDER BY created_at ASC;";
         var records = new List<SessionRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -127,7 +131,8 @@ public sealed class SqliteEventStore : IEventStore, IDisposable
                 DateTimeOffset.Parse(reader.GetString(7)),
                 reader.IsDBNull(8) ? null : reader.GetString(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9),
-                reader.IsDBNull(10) ? null : reader.GetString(10)));
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11)));
         }
 
         return records;

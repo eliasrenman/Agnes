@@ -144,7 +144,7 @@ public sealed class AgnesHub : Hub<IAgnesClient>, IAgnesServer
     }
 
     public Task<SessionInfo> OpenSession(OpenSessionRequest request)
-        => _sessions.OpenSessionAsync(request.AdapterId, request.WorkingDirectory, request.UseWorktree, request.SkipPermissions, request.McpApproval, request.GitCredentialMode, request.UseSandbox, request.ModelId, owner: CallerOwnerId());
+        => _sessions.OpenSessionAsync(request.AdapterId, request.WorkingDirectory, request.UseWorktree, request.SkipPermissions, request.McpApproval, request.GitCredentialMode, request.UseSandbox, request.ModelId, request.ReasoningEffortId, owner: CallerOwnerId());
 
     /// <summary>
     /// What is already running on this host, filtered to what the caller may actually subscribe to. The gate is
@@ -190,7 +190,7 @@ public sealed class AgnesHub : Hub<IAgnesClient>, IAgnesServer
         var profile = _launchProfiles.Find(request.ProfileId)
             ?? throw new InvalidOperationException($"No launch profile with id '{request.ProfileId}'.");
         var open = profile.ToOpenSessionRequest(request.WorkingDirectoryOverride);
-        return _sessions.OpenSessionAsync(open.AdapterId, open.WorkingDirectory, open.UseWorktree, open.SkipPermissions, open.McpApproval, open.GitCredentialMode, open.UseSandbox, open.ModelId, owner: CallerOwnerId());
+        return _sessions.OpenSessionAsync(open.AdapterId, open.WorkingDirectory, open.UseWorktree, open.SkipPermissions, open.McpApproval, open.GitCredentialMode, open.UseSandbox, open.ModelId, open.ReasoningEffortId, owner: CallerOwnerId());
     }
     public Task<IReadOnlyList<Abstractions.ExternalSessionInfo>> DiscoverExternalSessions(string workspaceDirectory)
         => _sessions.DiscoverExternalSessionsAsync(workspaceDirectory);
@@ -298,6 +298,12 @@ public sealed class AgnesHub : Hub<IAgnesClient>, IAgnesServer
 
     public Task SwitchModel(string sessionId, string? modelId)
         => _sessions.SwitchModelAsync(sessionId, modelId);
+
+    public Task SetReasoningEffort(string sessionId, string effortId)
+        => _sessions.SetReasoningEffortAsync(sessionId, effortId);
+
+    public Task ExecuteAgentCommand(string sessionId, string commandId, string? argument)
+        => _sessions.ExecuteAgentCommandAsync(sessionId, commandId, argument);
 
     public Task<GitStatus> GetGitStatus(string sessionId)
         => _sessions.GetGitStatusAsync(sessionId);

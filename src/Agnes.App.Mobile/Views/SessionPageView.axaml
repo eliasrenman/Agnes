@@ -376,7 +376,7 @@
                       Command="{Binding $parent[ItemsControl].DataContext.ApplySlashCommand}"
                       CommandParameter="{Binding}">
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                  <TextBlock Classes="mono" Text="{Binding Name, StringFormat='/{0}'}"
+                  <TextBlock Classes="mono" Text="{Binding DisplayToken}"
                              Foreground="{DynamicResource AccentText}" />
                   <TextBlock Classes="muted" Text="{Binding Description}" TextTrimming="CharacterEllipsis" />
                 </StackPanel>

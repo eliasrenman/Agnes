@@ -84,7 +84,7 @@ public interface IAgnesHost : IAsyncDisposable
     Task<NegotiatedCapabilities> NegotiateAsync(ClientCapabilities client)
         => Task.FromResult(new NegotiatedCapabilities([]));
 
-    Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null);
+    Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null);
 
     /// <summary>The sessions already on this host that this client may reach — live or dormant — so a device
     /// that has just paired can rejoin work in progress rather than only start something new. The host filters
@@ -205,6 +205,13 @@ public interface IAgnesHost : IAsyncDisposable
     /// <summary>Switches a live session's model; the host relaunches the agent (resuming its conversation) on
     /// the new model. Null selects the CLI's default.</summary>
     Task SwitchModelAsync(string sessionId, string? modelId);
+
+    /// <summary>Changes the provider-specific reasoning effort used by subsequent turns.</summary>
+    Task SetReasoningEffortAsync(string sessionId, string effortId)
+        => throw new NotSupportedException("This host does not support reasoning-effort changes.");
+
+    Task ExecuteAgentCommandAsync(string sessionId, string commandId, string? argument)
+        => throw new NotSupportedException("This host does not support provider-native commands.");
 
     Task RespondPermissionAsync(string sessionId, string requestId, string optionId);
 

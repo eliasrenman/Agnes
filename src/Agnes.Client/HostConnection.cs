@@ -171,8 +171,8 @@ public sealed class HostConnection : IAgnesHost
     public Task<NegotiatedCapabilities> NegotiateAsync(ClientCapabilities client)
         => _hub.InvokeAsync<NegotiatedCapabilities>(nameof(IAgnesServer.Negotiate), client);
 
-    public Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null)
-        => _hub.InvokeAsync<SessionInfo>(nameof(IAgnesServer.OpenSession), new OpenSessionRequest(adapterId, workingDirectory, useWorktree, skipPermissions, mcpApproval, gitCredentialMode, useSandbox, modelId));
+    public Task<SessionInfo> OpenSessionAsync(string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false, string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null, string? reasoningEffortId = null)
+        => _hub.InvokeAsync<SessionInfo>(nameof(IAgnesServer.OpenSession), new OpenSessionRequest(adapterId, workingDirectory, useWorktree, skipPermissions, mcpApproval, gitCredentialMode, useSandbox, modelId, reasoningEffortId));
 
     public Task<IReadOnlyList<SessionSummary>> ListSessionsAsync()
         => _hub.InvokeAsync<IReadOnlyList<SessionSummary>>(nameof(IAgnesServer.ListSessions));
@@ -257,6 +257,12 @@ public sealed class HostConnection : IAgnesHost
 
     public Task SwitchModelAsync(string sessionId, string? modelId)
         => _hub.InvokeAsync(nameof(IAgnesServer.SwitchModel), sessionId, modelId);
+
+    public Task SetReasoningEffortAsync(string sessionId, string effortId)
+        => _hub.InvokeAsync(nameof(IAgnesServer.SetReasoningEffort), sessionId, effortId);
+
+    public Task ExecuteAgentCommandAsync(string sessionId, string commandId, string? argument)
+        => _hub.InvokeAsync(nameof(IAgnesServer.ExecuteAgentCommand), sessionId, commandId, argument);
 
     public Task<GitStatus> GetGitStatusAsync(string sessionId)
         => _hub.InvokeAsync<GitStatus>(nameof(IAgnesServer.GetGitStatus), sessionId);

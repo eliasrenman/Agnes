@@ -33,7 +33,8 @@ public abstract class StubAgnesHost : IAgnesHost
 
     public virtual Task<SessionInfo> OpenSessionAsync(
         string adapterId, string workingDirectory, bool useWorktree = false, bool skipPermissions = false,
-        string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null)
+        string mcpApproval = "Ask", string gitCredentialMode = "Off", bool useSandbox = true, string? modelId = null,
+        string? reasoningEffortId = null)
         => throw new NotSupportedException();
 
     public virtual Task<SessionView> SubscribeAsync(string sessionId, long since = 0)
@@ -43,6 +44,8 @@ public abstract class StubAgnesHost : IAgnesHost
     public virtual Task CancelAsync(string sessionId) => Task.CompletedTask;
     public virtual Task SetModeAsync(string sessionId, string modeId) => Task.CompletedTask;
     public virtual Task SwitchModelAsync(string sessionId, string? modelId) => Task.CompletedTask;
+    public virtual Task SetReasoningEffortAsync(string sessionId, string effortId) => Task.CompletedTask;
+    public virtual Task ExecuteAgentCommandAsync(string sessionId, string commandId, string? argument) => Task.CompletedTask;
 
     public virtual Task<GitStatus> GetGitStatusAsync(string sessionId)
         => Task.FromResult(new GitStatus(false, null, false, []));

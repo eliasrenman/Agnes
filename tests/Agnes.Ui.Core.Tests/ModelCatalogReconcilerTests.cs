@@ -5,6 +5,16 @@ namespace Agnes.Ui.Core.Tests;
 
 public sealed class ModelCatalogReconcilerTests
 {
+    [Fact]
+    public void Reconciliation_preserves_provider_reasoning_metadata()
+    {
+        var efforts = new[] { new ReasoningEffortInfo("low", "Low"), new ReasoningEffortInfo("high", "High") };
+        var option = Assert.Single(ModelCatalogReconciler.Reconcile(
+            "codex", [new ModelInfo("gpt", "GPT", SupportedReasoningEfforts: efforts, DefaultReasoningEffortId: "high")], []));
+
+        Assert.Same(efforts, option.SupportedReasoningEfforts);
+        Assert.Equal("high", option.DefaultReasoningEffortId);
+    }
     private static readonly IReadOnlyList<ModelInfo> Catalog =
     [
         new ModelInfo("sonnet", "Claude Sonnet"),

@@ -14,7 +14,8 @@ public sealed record SessionRecord(
     DateTimeOffset CreatedAt,
     string? ModelId = null,
     string? Owner = null,
-    string? Group = null);
+    string? Group = null,
+    string? ReasoningEffortId = null);
 
 /// <summary>
 /// Append-only, per-session event log. Assigns a monotonic sequence to each event and

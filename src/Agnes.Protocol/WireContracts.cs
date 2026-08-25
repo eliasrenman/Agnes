@@ -475,7 +475,11 @@ public sealed record SessionInfo(
     bool SkipPermissions = false,
     string? Project = null,
     bool ReadOnly = false,
-    string? CurrentModelId = null);
+    string? CurrentModelId = null,
+    string? ReasoningEffortId = null,
+    ReasoningEffortCapability? ReasoningEffort = null,
+    IReadOnlyList<AgentCommandInfo>? Commands = null,
+    ProviderGoalInfo? ProviderGoal = null);
 
 /// <summary>How busy a catalogued session is right now, as the host sees it. Deliberately coarse — it is
 /// derived from live state (is a turn running?) rather than stored, so it needs no new bookkeeping. "Needs a
@@ -697,7 +701,8 @@ public sealed record SessionSnapshot(
 /// pre-model callers keep compiling.</param>
 public sealed record OpenSessionRequest(
     string AdapterId, string WorkingDirectory, bool UseWorktree = false, bool SkipPermissions = false,
-    string McpApproval = "Ask", string GitCredentialMode = "Off", bool UseSandbox = true, string? ModelId = null);
+    string McpApproval = "Ask", string GitCredentialMode = "Off", bool UseSandbox = true, string? ModelId = null,
+    string? ReasoningEffortId = null);
 
 /// <summary>
 /// A named, reusable bundle of new-session launch options — pick it once, reuse it forever. It captures the
@@ -727,7 +732,8 @@ public sealed record LaunchProfile(
     string GitCredentialMode = "Off",
     bool UseSandbox = true,
     string? ModelId = null,
-    string? ConnectedServiceProfileId = null)
+    string? ConnectedServiceProfileId = null,
+    string? ReasoningEffortId = null)
 {
     /// <summary>Materializes this profile into a concrete <see cref="OpenSessionRequest"/> for one launch. The
     /// override wins when supplied; otherwise the profile's pinned <see cref="WorkingDirectory"/> is used, and a
@@ -747,7 +753,7 @@ public sealed record LaunchProfile(
 
         return new OpenSessionRequest(
             AdapterId, directory, UseWorktree, SkipPermissions,
-            McpApproval, GitCredentialMode, UseSandbox, ModelId);
+            McpApproval, GitCredentialMode, UseSandbox, ModelId, ReasoningEffortId);
     }
 }
 
