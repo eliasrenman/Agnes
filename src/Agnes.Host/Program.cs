@@ -601,6 +601,19 @@ builder.Services.AddSingleton(new Agnes.Host.Sessions.SessionSecurityOptions
     MaxConcurrentSandboxes = builder.Configuration.GetValue("Agnes:Security:MaxConcurrentSandboxes", 0),
     TranscriptRetentionDays = builder.Configuration.GetValue("Agnes:Security:TranscriptRetentionDays", 0),
 });
+// ---- stalled-turn auto-continue (Agnes:AutoContinue:*) ----
+// Some agents end a turn reporting a normal completion while having produced nothing actionable — no
+// assistant message, no tool call, just reasoning (observed with OpenCode against a weak model: its agent
+// loop exits without error, and ACP has no way to say "I gave up"). The stall is ALWAYS surfaced as a
+// notice; this only controls whether the host also re-prompts, and how many times before it gives up.
+builder.Services.AddSingleton(new Agnes.Host.Sessions.AutoContinueOptions
+{
+    Enabled = builder.Configuration.GetValue("Agnes:AutoContinue:Enabled", true),
+    MaxAttempts = builder.Configuration.GetValue("Agnes:AutoContinue:MaxAttempts", 2),
+    Prompt = builder.Configuration["Agnes:AutoContinue:Prompt"] is { Length: > 0 } p
+        ? p
+        : new Agnes.Host.Sessions.AutoContinueOptions().Prompt,
+});
 builder.Services.AddHostedService<Agnes.Host.Sessions.UsageReporter>();
 builder.Services.AddHostedService<Agnes.Host.Events.TranscriptRetentionService>();
 builder.Services.AddSingleton<SessionManager>();
@@ -615,7 +628,30 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<Agnes.Host.Mcp.TranscriptPrivacyFilter>();
 builder.Services.AddSingleton<Agnes.Host.Mcp.IAgnesMcpBackend>(sp => new Agnes.Host.Mcp.SessionManagerMcpBackend(
     sp.GetRequiredService<SessionManager>(),
-    sp.GetRequiredService<Agnes.Host.Mcp.TranscriptPrivacyFilter>()));
+    sp.GetRequiredService<Agnes.Host.Mcp.TranscriptPrivacyFilter>(),
+    sp.GetRequiredService<SessionGoalManager>()));
+// ---- Agnes's own MCP endpoint, offered to sandboxed agents over the sandbox bridge ----
+// Plain HTTP on purpose: the address is the bridge gateway, unreachable from anywhere but the sandboxes,
+// which is the same containment the credential broker and MCP forward already rely on. Terminating TLS here
+// would mean trusting a self-signed host certificate inside every guest. Opt-in: with no bind address there
+// is no extra listener and no agnes server is offered to any agent.
+var guestMcpBind = builder.Configuration["Agnes:Sandbox:GuestMcpBindUrl"];
+var guestMcpUrl = builder.Configuration["Agnes:Sandbox:GuestMcpUrl"];
+if (!string.IsNullOrWhiteSpace(guestMcpBind))
+{
+    // Append rather than replace: calling UseUrls with only this address would drop the main TLS listener.
+    var existing = builder.Configuration["urls"]
+        ?? Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+    builder.WebHost.UseUrls(Agnes.Host.Mcp.GuestMcpEndpoint.CombineUrls(existing, guestMcpBind));
+}
+
+builder.Services.AddSingleton(new Agnes.Host.Sessions.GuestMcpOptions
+{
+    Url = string.IsNullOrWhiteSpace(guestMcpBind) ? null : guestMcpUrl,
+    BindUrl = guestMcpBind,
+});
+builder.Services.AddSingleton<Agnes.Host.Mcp.SessionMcpTokens>();
+
 builder.Services.AddSingleton<Agnes.Host.Mcp.IMcpDeviceAuthenticator>(sp =>
     new Agnes.Host.Mcp.DeviceRegistryMcpAuthenticator(sp.GetRequiredService<DeviceRegistry>()));
 builder.Services.AddSingleton<Agnes.Host.Mcp.IMcpCallerTokenSource, Agnes.Host.Mcp.HttpContextMcpTokenSource>();
@@ -760,6 +796,27 @@ builder.Services.AddSingleton(sp => new ScheduledTaskManager(
     scheduledTasksFile));
 builder.Services.AddHostedService<ScheduledRunner>();
 
+// ---- standing goals: nudge a session that goes quiet with work still owed ----
+// Idle-triggered rather than scheduled, so a working agent is never talked over and a stopped one is picked
+// up quickly. Bounded by a nudge budget plus an optional expiry, because an agent able to arm unbounded
+// self-prompting is a runaway. Persisted, so an armed goal survives a host restart.
+builder.Services.AddSingleton(sp => new SessionGoalManager(
+    builder.Configuration["Agnes:GoalsFile"]
+    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agnes", "session-goals.json")));
+builder.Services.AddHostedService<GoalWatcher>();
+
+// ---- liveness watchdog: say when a turn stops getting anywhere ----
+// Agnes could previously only tell a live agent from a dead one. A process that stays up with its stream
+// open but stops producing looks exactly like one hard at work — forever. This reports (never restarts):
+// a wedged turn may still recover, and throwing away visible work is worse than saying so.
+builder.Services.AddSingleton(new LivenessOptions
+{
+    Enabled = builder.Configuration.GetValue("Agnes:Liveness:Enabled", true),
+    QuietLimit = TimeSpan.FromMinutes(
+        builder.Configuration.GetValue("Agnes:Liveness:QuietMinutes", (int)SessionLiveness.DefaultQuietLimit.TotalMinutes)),
+});
+builder.Services.AddHostedService<LivenessWatchdog>();
+
 // ---- agent adapters (plugins) ----
 builder.Services.AddSingleton<IAgentAdapter>(sp =>
 {
@@ -784,6 +841,16 @@ builder.Services.AddSingleton<IAgentAdapter>(sp =>
     };
     return OpenCodeAgent.Create(loggerFactory, options);
 });
+
+// OpenCode via its NATIVE HTTP server, offered alongside the ACP adapter — the same both-paths shape
+// Claude Code has. The native surface reports failures and retries the ACP one cannot express, but it is
+// OpenCode's internal API rather than a versioned spec, so ACP stays the default.
+builder.Services.AddSingleton<IAgentAdapter>(sp => Agnes.Agents.OpenCode.Native.OpenCodeNativeAgent.Create(
+    sp.GetRequiredService<ILoggerFactory>(),
+    new Agnes.Agents.OpenCode.Native.OpenCodeNativeOptions
+    {
+        Command = builder.Configuration["Agnes:OpenCodeNative:Command"] ?? "opencode",
+    }));
 
 // Claude Code via its NATIVE SDK (stream-json), offered alongside the ACP adapter.
 builder.Services.AddSingleton<IAgentAdapter>(sp => Agnes.Agents.Native.ClaudeCodeNative.Create(
@@ -845,6 +912,12 @@ if (string.Equals(builder.Configuration["Agnes:Sandbox:Provider"], "incus", Stri
     builder.Services.AddSingleton<Agnes.Sandbox.Credentials.ClaudeCredentialProvider>();
     builder.Services.AddSingleton<Agnes.Sandbox.Credentials.IAgentCredentialProvider>(
         sp => sp.GetRequiredService<Agnes.Sandbox.Credentials.ClaudeCredentialProvider>());
+
+    // OpenCode's provider key. Without it a sandboxed OpenCode can only reach the credential-free
+    // providers and, rather than saying so, silently streams from a model the user did not choose.
+    builder.Services.AddSingleton<Agnes.Sandbox.Credentials.IAgentCredentialProvider>(
+        sp => new Agnes.Sandbox.Credentials.OpenCodeCredentialProvider(
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<Agnes.Sandbox.Credentials.OpenCodeCredentialProvider>()));
 
     builder.Services.AddSingleton<Agnes.Sandbox.Credentials.ClaudeTokenRotationPusher>();
 
@@ -1102,6 +1175,25 @@ builder.Services.AddSingleton(sp => new Agnes.Host.Plugins.PluginManagementServi
 
 
 var app = builder.Build();
+
+// FIRST in the pipeline on purpose. This port is plaintext and reachable from every sandbox, so the
+// path restriction has to run before anything else can respond on it: registered later, authentication
+// answers /agnes with a 401 instead, which both leaks that the hub is there and would serve it outright
+// to anyone holding a device token. Everything but the MCP endpoint is refused here.
+if (Agnes.Host.Mcp.GuestMcpEndpoint.TryGetPort(guestMcpBind) is { } guestPort)
+{
+    app.Use(async (ctx, next) =>
+    {
+        if (ctx.Connection.LocalPort == guestPort
+            && !Agnes.Host.Mcp.GuestMcpEndpoint.IsAllowedPath(ctx.Request.Path.Value))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        await next();
+    });
+}
 
 // Eagerly instantiate the rotation pusher (its FileSystemWatcher starts in the ctor) so live
 // sandboxes get refreshed credentials when the host claude CLI rotates its OAuth token.
