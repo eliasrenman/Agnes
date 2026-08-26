@@ -1668,7 +1668,11 @@ public sealed class SessionManager : IAsyncDisposable
     internal IReadOnlyList<(string SessionId, SessionActivity Activity)> LiveActivity(DateTimeOffset now)
         => [.. _sessions.Select(kv => (
             kv.Key,
-            new SessionActivity(kv.Value.IsTurnActive, kv.Value.ToolCallsInFlight, now - kv.Value.LastEventAt)))];
+            new SessionActivity(
+                kv.Value.IsTurnActive,
+                kv.Value.ToolCallsInFlight,
+                now - kv.Value.LastEventAt,
+                kv.Value.HumanRequestsInFlight)))];
 
     /// <summary>Writes a host-originated line into a session's log (and to every client). Public so
     /// background services — the goal watcher — can report what they did in the place the user is looking,
@@ -2195,7 +2199,10 @@ public sealed class SessionManager : IAsyncDisposable
         // The real agent session id is captured via HostSession.AgentSessionStarted (on the init line),
         // not polled here — polling raced the init line and persisted the placeholder id, which broke
         // --resume. Codex reports its id synchronously at open, so the catalogue is already correct there.
-        await session.PromptAsync(content).ConfigureAwait(false);
+        // A resumed provider can immediately replay a still-open request_user_input. Submit through the
+        // host-owned queue so a prompt arriving from any client cannot start a second turn behind that
+        // unresolved request. Idle sessions still send immediately.
+        await session.SubmitAsync(content).ConfigureAwait(false);
     }
 
     /// <summary>Sends content under the session's <see cref="SendPolicy"/> instead of forcing a turn: if one
@@ -2561,7 +2568,13 @@ public sealed class SessionManager : IAsyncDisposable
             return; // a plugin blocked the mode change
         }
 
-        await (await EnsureLiveAsync(sessionId).ConfigureAwait(false)).SetModeAsync(before.ModeId).ConfigureAwait(false);
+        var session = await EnsureLiveAsync(sessionId).ConfigureAwait(false);
+        if (session.IsTurnActive)
+        {
+            throw new InvalidOperationException("Mode cannot be changed while a turn is active.");
+        }
+
+        await session.SetModeAsync(before.ModeId).ConfigureAwait(false);
     }
 
     public async Task SetReasoningEffortAsync(string sessionId, string effortId)

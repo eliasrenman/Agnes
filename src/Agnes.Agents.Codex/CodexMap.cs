@@ -25,7 +25,7 @@ internal sealed class CodexMap
 
     /// <summary>An <c>item/started</c> notification: a tool call begins (messages stream via deltas).</summary>
     public IEnumerable<SessionEvent> ItemStarted(JsonElement notification)
-        => ItemOf(notification) is { } item ? ToolStart(item) : [];
+        => ItemOf(notification) is { } item && IsToolItem(item.Type) ? ToolStart(item) : [];
 
     /// <summary>An <c>item/completed</c> notification: final message text, or a tool call's result.</summary>
     public IEnumerable<SessionEvent> ItemCompleted(JsonElement notification)
@@ -119,6 +119,14 @@ internal sealed class CodexMap
     }
 
     // ---- tool items ----
+
+    // Codex emits item/started for every item, including messages, reasoning, and plans. Those items are
+    // content, not tools, and their completion paths intentionally do not emit ToolCallUpdateEvent. Treating
+    // their starts as tool calls therefore leaves Agnes with phantom in-flight tools forever, masking a
+    // genuinely wedged turn from the liveness watchdog. Unknown item kinds remain tool-like so newly added
+    // provider tools still surface instead of disappearing.
+    private static bool IsToolItem(string? type) => type is not
+        ("agentMessage" or "userMessage" or "reasoning" or "plan");
 
     private IEnumerable<SessionEvent> ToolStart(CodexItem item)
     {

@@ -95,6 +95,18 @@ public class CodexMapTests
         Assert.Empty(events); // the host records the user's prompt itself
     }
 
+    [Theory]
+    [InlineData("agentMessage")]
+    [InlineData("userMessage")]
+    [InlineData("reasoning")]
+    [InlineData("plan")]
+    public void Non_tool_item_starts_do_not_create_phantom_in_flight_tools(string type)
+    {
+        var map = new CodexMap();
+
+        Assert.Empty(Started(map, $"{{\"type\":\"{type}\",\"id\":\"content-1\"}}"));
+    }
+
     [Fact]
     public void Command_execution_starts_a_tool_call_then_updates_it()
     {

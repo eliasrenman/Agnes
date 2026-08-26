@@ -47,12 +47,19 @@ internal sealed class HostSession : IAsyncDisposable
     // events at all (a subagent), so silence only means something when nothing is outstanding.
     private long _lastEventTicks = DateTimeOffset.UtcNow.UtcTicks;
     private int _toolCallsInFlight;
+    private readonly HashSet<string> _humanRequestsInFlight = new(StringComparer.Ordinal);
 
     /// <summary>When this session last emitted an event.</summary>
     public DateTimeOffset LastEventAt => new(Interlocked.Read(ref _lastEventTicks), TimeSpan.Zero);
 
     /// <summary>Tool calls started but not yet reported completed or failed.</summary>
     public int ToolCallsInFlight => Volatile.Read(ref _toolCallsInFlight);
+
+    /// <summary>Questions and approvals emitted by the agent that have not been answered yet.</summary>
+    public int HumanRequestsInFlight
+    {
+        get { lock (_queueGate) { return _humanRequestsInFlight.Count; } }
+    }
 
     public HostSession(
         string sessionId,
@@ -125,7 +132,12 @@ internal sealed class HostSession : IAsyncDisposable
     public void SetPendingSeed(IReadOnlyList<ContentBlock> seed) => _pendingSeed = seed;
 
     /// <summary>Whether an agent turn is currently in flight (set on prompt, cleared on <see cref="TurnEndedEvent"/>).</summary>
-    public bool IsTurnActive { get { lock (_queueGate) { return _turnActive; } } }
+    public bool IsTurnActive
+    {
+        get { lock (_queueGate) { return IsBusyUnderLock(); } }
+    }
+
+    private bool IsBusyUnderLock() => _turnActive || _humanRequestsInFlight.Count > 0;
 
     /// <summary>The send policy applied to a busy-send (see <see cref="SubmitAsync"/>). Defaults to
     /// <see cref="SendPolicy.QueueInAgent"/>.</summary>
@@ -202,7 +214,8 @@ internal sealed class HostSession : IAsyncDisposable
         bool interrupt;
         lock (_queueGate)
         {
-            if (_sendPolicy == SendPolicy.PendingUntilReady || (_sendPolicy == SendPolicy.QueueInAgent && _turnActive))
+            var active = IsBusyUnderLock();
+            if (_sendPolicy == SendPolicy.PendingUntilReady || (_sendPolicy == SendPolicy.QueueInAgent && active))
             {
                 _queue.Add(new PendingMessage(Guid.NewGuid().ToString("n"), content));
                 queued = true;
@@ -211,7 +224,7 @@ internal sealed class HostSession : IAsyncDisposable
             else
             {
                 queued = false;
-                interrupt = _sendPolicy == SendPolicy.InterruptAndSend && _turnActive;
+                interrupt = _sendPolicy == SendPolicy.InterruptAndSend && active;
             }
         }
 
@@ -319,7 +332,7 @@ internal sealed class HostSession : IAsyncDisposable
             {
                 message = _queue[index];
                 _queue.RemoveAt(index);
-                wasActive = _turnActive;
+                wasActive = IsBusyUnderLock();
             }
         }
 
@@ -636,6 +649,38 @@ internal sealed class HostSession : IAsyncDisposable
                 // A finished turn owns nothing: anything still outstanding was abandoned with it, and
                 // carrying it forward would make the next quiet turn look permanently busy.
                 Interlocked.Exchange(ref _toolCallsInFlight, 0);
+                lock (_queueGate)
+                {
+                    _humanRequestsInFlight.Clear();
+                }
+                break;
+
+            case PermissionRequestedEvent permission:
+                lock (_queueGate)
+                {
+                    _humanRequestsInFlight.Add("permission:" + permission.RequestId);
+                }
+                break;
+
+            case PermissionResolvedEvent permission:
+                lock (_queueGate)
+                {
+                    _humanRequestsInFlight.Remove("permission:" + permission.RequestId);
+                }
+                break;
+
+            case QuestionAskedEvent question:
+                lock (_queueGate)
+                {
+                    _humanRequestsInFlight.Add("question:" + question.RequestId);
+                }
+                break;
+
+            case QuestionAnsweredEvent question:
+                lock (_queueGate)
+                {
+                    _humanRequestsInFlight.Remove("question:" + question.RequestId);
+                }
                 break;
         }
     }

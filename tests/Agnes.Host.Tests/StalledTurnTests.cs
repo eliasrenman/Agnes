@@ -275,4 +275,42 @@ public sealed class StalledTurnTests
         var activity = manager.LiveActivity(DateTimeOffset.UtcNow).Single(a => a.SessionId == info.SessionId).Activity;
         Assert.Equal(0, activity.ToolCallsInFlight);
     }
+
+    [Fact]
+    public async Task A_replayed_question_keeps_the_host_blocked_and_queues_a_new_prompt()
+    {
+        var adapter = new ScriptedAgentAdapter();
+        var prompts = new List<IReadOnlyList<ContentBlock>>();
+        adapter.Session.OnPrompt = (content, _) =>
+        {
+            prompts.Add(content);
+            return Task.FromResult(StopReason.EndTurn);
+        };
+        var store = new InMemoryEventStore();
+        await using var manager = new SessionManager(
+            TestPluginRegistries.Agents(adapter), store, new NullBroadcaster(),
+            NullLoggerFactory.Instance);
+        var info = await manager.OpenSessionAsync("scripted", Path.GetTempPath(), useSandbox: false);
+
+        // Codex can emit this while thread/resume is replaying an unfinished turn, before Agnes has sent
+        // any prompt in this process. The host must still recover the provider's real busy state.
+        adapter.Session.Emit(new QuestionAskedEvent("question-1", "call-1", []));
+        await WaitForAsync(async () =>
+            (await manager.GetSnapshotAsync(info.SessionId, 0)).Events.OfType<QuestionAskedEvent>().Any());
+
+        var activity = manager.LiveActivity(DateTimeOffset.UtcNow).Single().Activity;
+        Assert.True(activity.TurnActive);
+        Assert.Equal(1, activity.HumanRequestsInFlight);
+        Assert.Equal(
+            LivenessVerdict.Fine,
+            SessionLiveness.Assess(activity with { Quiet = TimeSpan.FromHours(3) }, TimeSpan.FromMinutes(10)));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => manager.SetModeAsync(info.SessionId, "plan"));
+
+        await manager.PromptAsync(info.SessionId, [new TextContent("new prompt")]);
+
+        Assert.Empty(prompts);
+        var queue = (await store.ReadSinceAsync(info.SessionId, 0)).OfType<PendingQueueEvent>().Last();
+        Assert.Equal("new prompt", Assert.IsType<TextContent>(Assert.Single(Assert.Single(queue.Queue).Content)).Text);
+    }
 }

@@ -3,8 +3,13 @@ namespace Agnes.Host.Sessions;
 /// <summary>What a live session looks like right now, as far as "is it getting anywhere" goes.</summary>
 /// <param name="TurnActive">Whether a turn is in flight.</param>
 /// <param name="ToolCallsInFlight">Tool calls started and not yet reported finished.</param>
+/// <param name="HumanRequestsInFlight">Questions or approvals still waiting on a person.</param>
 /// <param name="Quiet">How long since the session last emitted anything.</param>
-public readonly record struct SessionActivity(bool TurnActive, int ToolCallsInFlight, TimeSpan Quiet);
+public readonly record struct SessionActivity(
+    bool TurnActive,
+    int ToolCallsInFlight,
+    TimeSpan Quiet,
+    int HumanRequestsInFlight = 0);
 
 /// <summary>What the watchdog makes of a session.</summary>
 public enum LivenessVerdict
@@ -48,6 +53,13 @@ public static class SessionLiveness
 
         // Something is outstanding — a tool, a subagent — so silence is expected and means nothing.
         if (activity.ToolCallsInFlight > 0)
+        {
+            return LivenessVerdict.Fine;
+        }
+
+        // A question or approval is blocked on a person, not silently wedged in the provider. The client
+        // renders the corresponding attention card; warning that the model is stuck would be misleading.
+        if (activity.HumanRequestsInFlight > 0)
         {
             return LivenessVerdict.Fine;
         }

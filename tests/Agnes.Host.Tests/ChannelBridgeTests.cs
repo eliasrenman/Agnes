@@ -158,7 +158,12 @@ public sealed class ChannelBridgeTests
         var info = await h.Manager.OpenSessionAsync("scripted", "/tmp/work", useSandbox: false);
         h.Links.Link(fake.Id, "chat-1", "device-1");
 
-        await EmitAsync(h, info.SessionId, Requested("req-1", "First"));
+        await EmitAsync(
+            h,
+            info.SessionId,
+            Requested("req-1", "First"),
+            new PermissionResolvedEvent("req-1", "deny", PermissionOutcome.Denied),
+            new TurnEndedEvent(StopReason.EndTurn));
         Assert.Single(fake.SentMessages); // delivered while linked
 
         Assert.True(h.Links.Unlink(fake.Id, "chat-1"));
