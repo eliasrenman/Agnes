@@ -221,14 +221,8 @@ public sealed class TranscriptBuilder
                 PendingQuestionChanged?.Invoke();
                 break;
 
-            case QuestionAnsweredEvent qa when _questions.TryGetValue(qa.RequestId, out var qItem):
-                qItem.Resolved = true;
-                if (PendingQuestion == qItem)
-                {
-                    PendingQuestion = null;
-                    PendingQuestionChanged?.Invoke();
-                }
-
+            case QuestionAnsweredEvent qa:
+                ResolveQuestion(qa.RequestId);
                 break;
 
             case PermissionResolvedEvent rr when _permissions.TryGetValue(rr.RequestId, out var item):
@@ -280,6 +274,25 @@ public sealed class TranscriptBuilder
     }
 
     private void CloseBubble() => _openBubble = null;
+
+    /// <summary>Settles a question as soon as the host accepts the response. Codex also emits a later
+    /// QuestionAnsweredEvent; resolving through this idempotent seam keeps both orderings replay-safe.</summary>
+    public bool ResolveQuestion(string requestId)
+    {
+        if (!_questions.TryGetValue(requestId, out var item))
+        {
+            return false;
+        }
+
+        item.Resolve();
+        if (PendingQuestion == item)
+        {
+            PendingQuestion = null;
+            PendingQuestionChanged?.Invoke();
+        }
+
+        return true;
+    }
 
     // ---- Claude task-list tools (TaskCreate/TaskUpdate/TodoWrite) → the plan/tasks panel ----
     private readonly List<TaskRow> _tasks = [];

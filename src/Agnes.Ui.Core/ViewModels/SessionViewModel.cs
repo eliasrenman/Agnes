@@ -207,8 +207,8 @@ public sealed class SessionViewModel : ObservableObject
         // Only the null → first-plan transition needs announcing; after that the same PlanItemView is
         // updated in place and the panels are already bound to it.
         _transcript.PlanChanged += () => { OnPropertyChanged(nameof(Plan)); RaisePanels(); };
-        AnswerQuestionCommand = new RelayCommand<QuestionItem>(item => { _ = AnswerQuestionAsync(item); });
-        DismissQuestionCommand = new RelayCommand<QuestionItem>(item => { _ = DismissQuestionAsync(item); });
+        AnswerQuestionCommand = new AsyncRelayCommand<QuestionItem>(AnswerQuestionAsync);
+        DismissQuestionCommand = new AsyncRelayCommand<QuestionItem>(DismissQuestionAsync);
 
         _mainAgentNode = new AgentNode(null, title, isMain: true, SelectAgent) { IsSelected = true };
         AgentTree.Add(_mainAgentNode);
@@ -655,17 +655,43 @@ public sealed class SessionViewModel : ObservableObject
 
     private async Task AnswerQuestionAsync(QuestionItem? item)
     {
-        if (item is not null)
+        if (item is null || !item.BeginSubmission("Submitting answers…", "Answers submitted"))
         {
-            await _host.AnswerQuestionAsync(SessionId, item.RequestId, item.BuildAnswers());
+            return;
         }
+
+        RaiseActivity();
+        await SubmitQuestionResponseAsync(item, item.BuildAnswers()).ConfigureAwait(false);
     }
 
     private async Task DismissQuestionAsync(QuestionItem? item)
     {
-        if (item is not null)
+        if (item is null || !item.BeginSubmission("Dismissing question…", "Dismissed — continuing without answers"))
         {
-            await _host.AnswerQuestionAsync(SessionId, item.RequestId, []);
+            return;
+        }
+
+        RaiseActivity();
+        await SubmitQuestionResponseAsync(item, []).ConfigureAwait(false);
+    }
+
+    private async Task SubmitQuestionResponseAsync(QuestionItem item, IReadOnlyList<QuestionAnswer> answers)
+    {
+        try
+        {
+            await _host.AnswerQuestionAsync(SessionId, item.RequestId, answers).ConfigureAwait(false);
+            _dispatcher.Post(() => _transcript.ResolveQuestion(item.RequestId));
+        }
+        catch (Exception ex)
+        {
+            var message = ex.GetBaseException().Message;
+            _dispatcher.Post(() =>
+            {
+                item.SubmissionFailed(message);
+                RaiseActivity();
+                NotificationRaised?.Invoke(new AppNotification(
+                    "Could not submit answers", message, NotificationKind.Error, SessionId, item.AnchorId));
+            });
         }
     }
 
@@ -884,6 +910,7 @@ public sealed class SessionViewModel : ObservableObject
     /// <summary>High-level session state, derived from what's in flight.</summary>
     public SessionActivity Activity =>
         _interrupted ? SessionActivity.Error
+        : PendingQuestion?.IsSubmitting == true ? SessionActivity.Running
         : PendingPermission is not null || PendingQuestion is not null ? SessionActivity.NeedsInput
         : IsTurnActive ? SessionActivity.Running
         : HasFiles ? SessionActivity.ReadyForReview

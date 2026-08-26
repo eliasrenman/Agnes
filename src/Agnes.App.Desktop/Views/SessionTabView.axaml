@@ -85,6 +85,24 @@
             <Setter Property="Background" Value="{DynamicResource Panel}" />
             <Setter Property="BorderBrush" Value="{DynamicResource Line}" />
         </Style>
+        <!-- A question moves through all four semantic tones: amber while it needs the person, sky while
+             their response is travelling, mint once accepted, and pink only when submission failed. -->
+        <Style Selector="Border.question">
+            <Setter Property="Background" Value="{DynamicResource StatusAttentionSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StatusAttention}" />
+        </Style>
+        <Style Selector="Border.question.working">
+            <Setter Property="Background" Value="{DynamicResource StatusWorkingSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StatusWorking}" />
+        </Style>
+        <Style Selector="Border.question.review">
+            <Setter Property="Background" Value="{DynamicResource StatusDoneSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StatusDone}" />
+        </Style>
+        <Style Selector="Border.question.error">
+            <Setter Property="Background" Value="{DynamicResource StatusErrorSoft}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource StatusError}" />
+        </Style>
         <!-- Pulsing dot for the "Thinking…" indicator. -->
         <Style Selector="Border.pulse">
             <Style.Animations>
@@ -1670,12 +1688,19 @@
 
                                     <!-- Structured "ask the user" card (AskUserQuestion / requestUserInput). -->
                                     <DataTemplate DataType="tr:QuestionItem">
-                                        <Border Margin="0,6" Padding="14,12" CornerRadius="10"
-                                                Background="{DynamicResource StatusAttentionSoft}" BorderBrush="{DynamicResource StatusAttention}" BorderThickness="1">
+                                        <Border Classes="question" Classes.working="{Binding IsSubmitting}"
+                                                Classes.review="{Binding Resolved}" Classes.error="{Binding HasSubmissionError}"
+                                                Margin="0,6" Padding="14,12" CornerRadius="10" BorderThickness="1">
                                             <StackPanel Spacing="12">
                                                 <TextBlock Text="The agent needs your input" Foreground="{DynamicResource StatusAttention}"
-                                                           FontWeight="SemiBold" FontSize="12" />
-                                                <ItemsControl ItemsSource="{Binding Questions}">
+                                                           FontWeight="SemiBold" FontSize="12" IsVisible="{Binding IsAwaitingResponse}" />
+                                                <TextBlock Text="Sending your response" Foreground="{DynamicResource StatusWorking}"
+                                                           FontWeight="SemiBold" FontSize="12" IsVisible="{Binding IsSubmitting}" />
+                                                <TextBlock Text="Response sent" Foreground="{DynamicResource StatusDone}"
+                                                           FontWeight="SemiBold" FontSize="12" IsVisible="{Binding Resolved}" />
+                                                <TextBlock Text="Response was not sent" Foreground="{DynamicResource StatusError}"
+                                                           FontWeight="SemiBold" FontSize="12" IsVisible="{Binding HasSubmissionError}" />
+                                                <ItemsControl ItemsSource="{Binding Questions}" IsEnabled="{Binding CanRespond}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
                                                             <StackPanel Spacing="6" Margin="0,0,0,6">
@@ -1715,15 +1740,22 @@
                                                         </DataTemplate>
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
-                                                <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding !Resolved}">
+                                                <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding CanRespond}">
                                                     <Button Classes="accent" Content="Submit" Command="{Binding $parent[ItemsControl].DataContext.AnswerQuestionCommand}"
                                                             CommandParameter="{Binding}" Padding="16,6" />
                                                     <Button Classes="chip" Content="Dismiss" Command="{Binding $parent[ItemsControl].DataContext.DismissQuestionCommand}"
                                                             CommandParameter="{Binding}" Padding="16,6" />
                                                 </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding IsSubmitting}">
+                                                    <ProgressBar IsIndeterminate="True" Width="42" Height="3" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding SubmissionText}" Foreground="{DynamicResource StatusWorking}"
+                                                               FontSize="11" VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding SubmissionError}" Foreground="{DynamicResource StatusError}"
+                                                           FontSize="11" TextWrapping="Wrap" IsVisible="{Binding HasSubmissionError}" />
                                                 <StackPanel Orientation="Horizontal" Spacing="5" IsVisible="{Binding Resolved}">
-                                                               <ic:SymbolIcon Symbol="Checkmark" Foreground="{DynamicResource Good}" FontSize="13" />
-                                                               <TextBlock Text="Answered" Foreground="{DynamicResource Good}" FontSize="11" VerticalAlignment="Center" />
+                                                               <ic:SymbolIcon Symbol="Checkmark" Foreground="{DynamicResource StatusDone}" FontSize="13" />
+                                                               <TextBlock Text="{Binding ResolutionText}" Foreground="{DynamicResource StatusDone}" FontSize="11" VerticalAlignment="Center" />
                                                            </StackPanel>
                                             </StackPanel>
                                         </Border>

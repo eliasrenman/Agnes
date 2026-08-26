@@ -493,6 +493,11 @@ public sealed class NoticeItem : TranscriptItem
 public sealed class QuestionItem : TranscriptItem
 {
     private bool _resolved;
+    private bool _isSubmitting;
+    private string _submissionText = string.Empty;
+    private string _resolutionText = "Answered";
+    private string? _submissionError;
+    private string? _pendingResolutionText;
 
     public QuestionItem(string requestId, IReadOnlyList<AgentQuestion> questions)
     {
@@ -506,7 +511,102 @@ public sealed class QuestionItem : TranscriptItem
     public bool Resolved
     {
         get => _resolved;
-        set => SetProperty(ref _resolved, value);
+        private set
+        {
+            if (SetProperty(ref _resolved, value))
+            {
+                OnPropertyChanged(nameof(CanRespond));
+                OnPropertyChanged(nameof(IsAwaitingResponse));
+            }
+        }
+    }
+
+    /// <summary>True while Agnes is forwarding this response to the host/provider.</summary>
+    public bool IsSubmitting
+    {
+        get => _isSubmitting;
+        private set
+        {
+            if (SetProperty(ref _isSubmitting, value))
+            {
+                OnPropertyChanged(nameof(CanRespond));
+                OnPropertyChanged(nameof(IsAwaitingResponse));
+            }
+        }
+    }
+
+    public bool CanRespond => !Resolved && !IsSubmitting;
+
+    public bool IsAwaitingResponse => CanRespond && !HasSubmissionError;
+
+    public string SubmissionText
+    {
+        get => _submissionText;
+        private set => SetProperty(ref _submissionText, value);
+    }
+
+    public string ResolutionText
+    {
+        get => _resolutionText;
+        private set => SetProperty(ref _resolutionText, value);
+    }
+
+    public string? SubmissionError
+    {
+        get => _submissionError;
+        private set
+        {
+            if (SetProperty(ref _submissionError, value))
+            {
+                OnPropertyChanged(nameof(HasSubmissionError));
+                OnPropertyChanged(nameof(IsAwaitingResponse));
+            }
+        }
+    }
+
+    public bool HasSubmissionError => !string.IsNullOrWhiteSpace(SubmissionError);
+
+    /// <summary>Claims the card for one response operation. The paired submit/dismiss buttons share this
+    /// state, so a double click or clicking the other action cannot send a second answer.</summary>
+    public bool BeginSubmission(string progressText, string resolutionText)
+    {
+        if (!CanRespond)
+        {
+            return false;
+        }
+
+        SubmissionError = null;
+        SubmissionText = progressText;
+        _pendingResolutionText = resolutionText;
+        IsSubmitting = true;
+        return true;
+    }
+
+    /// <summary>Settles the card locally. This is idempotent so the immediate host acknowledgement and the
+    /// later provider <c>QuestionAnsweredEvent</c> can race without changing the visible outcome.</summary>
+    public void Resolve()
+    {
+        if (Resolved)
+        {
+            return;
+        }
+
+        ResolutionText = _pendingResolutionText ?? "Answered";
+        SubmissionError = null;
+        Resolved = true;
+        IsSubmitting = false;
+    }
+
+    public void SubmissionFailed(string message)
+    {
+        if (Resolved)
+        {
+            return;
+        }
+
+        _pendingResolutionText = null;
+        IsSubmitting = false;
+        SubmissionError = message;
     }
 
     /// <summary>The answers to submit — chosen labels + any notes, per question.</summary>

@@ -77,6 +77,10 @@ public abstract class StubAgnesHost : IAgnesHost
     public virtual Task<IReadOnlyList<InboxRun>> GetInboxAsync() => Task.FromResult<IReadOnlyList<InboxRun>>([]);
 
     public virtual Task RespondPermissionAsync(string sessionId, string requestId, string optionId) => Task.CompletedTask;
+    public virtual Task AnswerQuestionAsync(
+        string sessionId,
+        string requestId,
+        IReadOnlyList<QuestionAnswer> answers) => Task.CompletedTask;
     public virtual Task PauseSandboxAsync(string sessionId) => Task.CompletedTask;
     public virtual Task ResumeSandboxAsync(string sessionId) => Task.CompletedTask;
     public virtual Task DeleteSandboxAsync(string sessionId) => Task.CompletedTask;

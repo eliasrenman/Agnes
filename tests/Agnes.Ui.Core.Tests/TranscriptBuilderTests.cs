@@ -285,6 +285,7 @@ public class TranscriptBuilderTests
 
         t.Apply(new QuestionAnsweredEvent("r1"));
         Assert.True(item.Resolved);
+        Assert.Equal("Answered", item.ResolutionText);
         Assert.Null(t.PendingQuestion);
         Assert.Equal(2, changes); // raised on ask + on answer
     }
